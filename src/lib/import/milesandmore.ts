@@ -108,15 +108,15 @@ export const processMandMFile = async (
     // Use the AirlineDesignatorCode to determine the airline.
     const airlineIata = segment.AirlineDesignatorCode.trim();
     let airline: string | null = null;
-    if (options.airlineFromFlightNumber && airlineIata) {
-      airline = airlineIata ? (airlineFromIATA(airlineIata)?.icao ?? null) : null;
+    if (airlineIata) {
+     const airline = airlineIata ? (airlineFromIATA(airlineIata)?.icao ?? null) : null;
     }
 
     // Map the compartment class to a seat class.
     const rawSeatClass = segment.CompartmentClass.trim();
     const seatClass = MILES_SEAT_CLASS_MAP[rawSeatClass] ?? null;
 
-    const flightNumber = String(segment.FlightNumber).trim() && String(segment.AirlineDesignatorCode)
+    const flightNumber = String(segment.AirlineDesignatorCode).trim() + String(segment.FlightNumber).trim();
   
     flights.push({
       date: segment.DepartureDate,
