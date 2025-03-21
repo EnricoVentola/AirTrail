@@ -116,7 +116,7 @@ export const processMandMFile = async (
     const rawSeatClass = segment.CompartmentClass.trim();
     const seatClass = MILES_SEAT_CLASS_MAP[rawSeatClass] ?? null;
 
-
+    const flightNumber = String(segment.FlightNumber).trim() && String(segment.AirlineDesignatorCode)
   
     flights.push({
       date: segment.DepartureDate,
@@ -125,7 +125,7 @@ export const processMandMFile = async (
       departure: departure.toISOString(),
       arrival: arrival.toISOString(),
       duration,
-      flightNumber: String(segment.FlightNumber),
+      flightNumber: flightNumber,
       flightReason: null,
       airline,
       aircraft: extractIACOFromMilesAndMoreCode(segment.AircraftCode),
