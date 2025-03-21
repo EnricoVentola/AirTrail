@@ -7,6 +7,8 @@ import { processAirTrailFile } from '$lib/import/airtrail';
 import { processAITAFile } from '$lib/import/aita';
 import { processFR24File } from '$lib/import/fr24';
 import { processJetLogFile } from '$lib/import/jetlog';
+import { processMandMFile } from '$lib/import/milesandmore';
+
 import { readFile } from '$lib/utils';
 
 const Platform = platforms.map((platform) => platform.value)[0];
@@ -26,6 +28,8 @@ export const processFile = async (
     return await processFR24File(content);
   } else if (platform === 'aita') {
     return await processAITAFile(content, options);
+  } else if (platform === 'milesandmore') {
+    return await processMandMFile(content, options);
   }
 
   throw new Error('Unknown platform');

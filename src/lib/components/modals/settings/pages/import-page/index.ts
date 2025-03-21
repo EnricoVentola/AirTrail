@@ -36,4 +36,12 @@ export const platforms = [
       airlineFromFlightNumber: false,
     },
   },
+  {
+    name: 'Miles and More',
+    value: 'milesandmore',
+    options: {
+      filterOwner: false,
+      airlineFromFlightNumber: true,
+    },
+  }
 ] as const;
