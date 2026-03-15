@@ -42,8 +42,7 @@ export const flightDateTimeSchema = z.object({
   departure: z
     .string()
     .datetime({ offset: true, message: 'Select a departure date' })
-    .nullable()
-    .refine((value) => value !== null, 'Select a departure date'),
+    .nullable(),
   departureTime: timePrimitive,
   departureScheduled: dateTimePrimitive.nullable(),
   departureScheduledTime: timePrimitive,
@@ -104,14 +103,21 @@ export const flightOptionalInformationSchema = z.object({
     .nullable(),
   flightReason: z.enum(FlightReasons).nullable(),
   note: z.string().max(1000, 'Note is too long').nullable(),
-  // TODO: Terminal/gate fields (populated via flight lookup, not editable in UI yet)
   departureTerminal: z.string().max(10).nullable().optional(),
   departureGate: z.string().max(10).nullable().optional(),
   arrivalTerminal: z.string().max(10).nullable().optional(),
   arrivalGate: z.string().max(10).nullable().optional(),
 });
 
+export const flightCustomFieldsSchema = z.object({
+  // Map of custom field key/fieldId -> value.
+  customFields: z.record(z.string(), z.unknown()).default({}),
+});
+
 export const flightSchema = flightAirportsSchema
   .merge(flightDateTimeSchema)
   .merge(flightOptionalInformationSchema)
-  .merge(flightSeatInformationSchema);
+  .merge(flightSeatInformationSchema)
+  .merge(flightCustomFieldsSchema);
+
+export type FlightFormData = z.infer<typeof flightSchema>;

@@ -38,6 +38,7 @@ const defaultFlight = {
   aircraftReg: null,
   flightReason: null,
   note: null,
+  customFields: {},
 };
 
 const defaultSeat = {
@@ -67,12 +68,21 @@ const saveApiFlightSchema = flightSchema
 
 const dateTimeSchema = z.string().datetime({ offset: true });
 
+const getAirportByCode = async (input: string) => {
+  return (await getAirportByIcao(input)) ?? (await getAirportByIata(input));
+};
+
 export const POST: RequestHandler = async ({ request }) => {
   const body = await request.json();
   const filled = {
     ...defaultFlight,
     ...body,
-    seats: body.seats.map((s) => ({ ...defaultSeat, ...s })),
+    seats: Array.isArray(body.seats)
+      ? body.seats.map((s: unknown) => ({
+          ...defaultSeat,
+          ...(s && typeof s === 'object' ? s : {}),
+        }))
+      : [],
   };
   const flight = {
     ...filled,
@@ -188,12 +198,12 @@ const opts = body.departure
     return unauthorized();
   }
 
-  const from = await getAirportByIcao(parsed.data.from);
+  const from = await getAirportByCode(parsed.data.from);
   if (!from) {
     return apiError('Invalid departure airport');
   }
 
-  const to = await getAirportByIcao(parsed.data.to);
+  const to = await getAirportByCode(parsed.data.to);
   if (!to) {
     return apiError('Invalid arrival airport');
   }
