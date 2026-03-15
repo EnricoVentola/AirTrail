@@ -4,7 +4,13 @@
   import { defaults, type Infer, superForm } from 'sveltekit-superforms';
   import { zod } from 'sveltekit-superforms/adapters';
 
-  import { FlightForm } from '$lib/components/modals/flight-form';
+  import { page } from '$app/state';
+
+  import {
+    FlightCustomFieldsModal,
+    FlightForm,
+    FlightTerminalGateModal,
+  } from '$lib/components/modals/flight-form';
   import { Button } from '$lib/components/ui/button';
   import * as Form from '$lib/components/ui/form';
   import {
@@ -12,13 +18,10 @@
     ModalBreadcrumbHeader,
     ModalFooter,
   } from '$lib/components/ui/modal';
-  import { trpc } from '$lib/trpc';
-  import type { FlightData } from '$lib/utils';
-  import {
-    formatAsTime,
-    isUsingAmPm,
-    parseLocalizeISO,
-  } from '$lib/utils/datetime';
+  import { openModalsState } from '$lib/state.svelte';
+  import { api, trpc } from '$lib/trpc';
+  import { type FlightData } from '$lib/utils';
+  import { decomposeToLocal, isUsingAmPm } from '$lib/utils/datetime';
   import { flightSchema } from '$lib/zod/flight';
 
   let {
@@ -37,51 +40,109 @@
   // (not necessarily the user's locale, because our time validator doesn't support all languages).
   const displayLocale = isUsingAmPm() ? 'en-US' : 'fr-FR';
 
-  const toLocalTimeString = (iso: string | null, tzId: string | null) => {
-    if (!iso || !tzId) return null;
-    return formatAsTime(parseLocalizeISO(iso, tzId), displayLocale);
+  const customFieldDefinitions = trpc.customField.listDefinitions.query({
+    entityType: 'flight',
+  });
+  let customFieldValues = $state<Record<number, unknown>>({});
+  /** Field IDs that have values saved in the database for this flight. */
+  let savedFieldIds = $state<Set<number>>(new Set());
+  let customFieldsModal = $state<ReturnType<typeof FlightCustomFieldsModal>>();
+
+  const toCustomFieldsPayload = (): Record<string, unknown> => {
+    const defs = $customFieldDefinitions.data ?? [];
+    const keyById = new Map(defs.map((d) => [d.id, d.key]));
+    const payload: Record<string, unknown> = {};
+
+    for (const [id, value] of Object.entries(customFieldValues)) {
+      const key = keyById.get(Number(id));
+      if (key) {
+        payload[key] = value;
+      }
+    }
+
+    return payload;
   };
+
+  $effect(() => {
+    if (!open) return;
+
+    (async () => {
+      try {
+        const values = await api.customField.getEntityValues.query({
+          entityType: 'flight',
+          entityId: String(flight.id),
+        });
+        customFieldValues = Object.fromEntries(
+          values.map((v) => [v.fieldId, v.value]),
+        );
+        savedFieldIds = new Set(values.map((v) => v.fieldId));
+      } catch (e) {
+        console.error(e);
+      }
+    })();
+  });
+
+  const fromTz = flight.from?.tz ?? 'UTC';
+  const toTz = flight.to?.tz ?? 'UTC';
+
+  const dep = decomposeToLocal(flight.raw.departure, fromTz, displayLocale);
+  const arr = decomposeToLocal(flight.raw.arrival, toTz, displayLocale);
+  const depSched = decomposeToLocal(
+    flight.raw.departureScheduled,
+    fromTz,
+    displayLocale,
+  );
+  const arrSched = decomposeToLocal(
+    flight.raw.arrivalScheduled,
+    toTz,
+    displayLocale,
+  );
+  const takeoffSched = decomposeToLocal(
+    flight.raw.takeoffScheduled,
+    fromTz,
+    displayLocale,
+  );
+  const takeoffAct = decomposeToLocal(
+    flight.raw.takeoffActual,
+    fromTz,
+    displayLocale,
+  );
+  const landingSched = decomposeToLocal(
+    flight.raw.landingScheduled,
+    toTz,
+    displayLocale,
+  );
+  const landingAct = decomposeToLocal(
+    flight.raw.landingActual,
+    toTz,
+    displayLocale,
+  );
+
   const schemaFlight = {
     ...(flight.raw as unknown as Omit<
       typeof flight.raw,
       'id' | 'userId' | 'date' | 'duration'
     >),
-    departure: flight.departure
-      ? flight.departure.toISOString()
-      : flight.raw.date
+    departure:
+      dep.date ??
+      (flight.raw.date
         ? new Date(flight.raw.date + 'T00:00:00Z').toISOString()
-        : null,
-    arrival: flight.arrival ? flight.arrival.toISOString() : null,
-    departureTime: flight.departure
-      ? formatAsTime(flight.departure, displayLocale)
-      : null,
-    arrivalTime: flight.arrival
-      ? formatAsTime(flight.arrival, displayLocale)
-      : null,
-    departureScheduledTime: toLocalTimeString(
-      flight.raw.departureScheduled,
-      flight.from?.tz ?? null,
-    ),
-    arrivalScheduledTime: toLocalTimeString(
-      flight.raw.arrivalScheduled,
-      flight.to?.tz ?? null,
-    ),
-    takeoffScheduledTime: toLocalTimeString(
-      flight.raw.takeoffScheduled,
-      flight.from?.tz ?? null,
-    ),
-    takeoffActualTime: toLocalTimeString(
-      flight.raw.takeoffActual,
-      flight.from?.tz ?? null,
-    ),
-    landingScheduledTime: toLocalTimeString(
-      flight.raw.landingScheduled,
-      flight.to?.tz ?? null,
-    ),
-    landingActualTime: toLocalTimeString(
-      flight.raw.landingActual,
-      flight.to?.tz ?? null,
-    ),
+        : null),
+    arrival: arr.date,
+    departureScheduled: depSched.date,
+    arrivalScheduled: arrSched.date,
+    takeoffScheduled: takeoffSched.date,
+    takeoffActual: takeoffAct.date,
+    landingScheduled: landingSched.date,
+    landingActual: landingAct.date,
+    departureTime: dep.time,
+    arrivalTime: arr.time,
+    departureScheduledTime: depSched.time,
+    arrivalScheduledTime: arrSched.time,
+    takeoffScheduledTime: takeoffSched.time,
+    takeoffActualTime: takeoffAct.time,
+    landingScheduledTime: landingSched.time,
+    landingActualTime: landingAct.time,
   };
 
   const form = superForm(
@@ -90,8 +151,12 @@
       dataType: 'json',
       id: Math.random().toString(36).substring(7),
       validators: zod(flightSchema),
-      onSubmit() {
+      onSubmit({ cancel }) {
         $formData.id = flight.id;
+        $formData.customFields = toCustomFieldsPayload();
+        if (!customFieldsModal?.validate()) {
+          cancel();
+        }
       },
       onUpdate({ form }) {
         if (form.message) {
@@ -106,7 +171,7 @@
       },
     },
   );
-  const { form: formData, enhance } = form;
+  const { form: formData, enhance, submitting } = form;
 </script>
 
 {#if showTrigger}
@@ -129,7 +194,34 @@
   <form method="POST" action="/api/flight/save/form" use:enhance>
     <FlightForm {form} />
     <ModalFooter>
-      <Form.Button size="sm">Save</Form.Button>
+      <div class="flex w-full items-center justify-between">
+        <div class="flex items-center gap-2">
+          <FlightTerminalGateModal {form} />
+          <FlightCustomFieldsModal
+            bind:this={customFieldsModal}
+            definitions={$customFieldDefinitions.data ?? []}
+            bind:values={customFieldValues}
+            {savedFieldIds}
+            onOpenSettings={page.data.user?.role !== 'user'
+              ? () => {
+                  open = false;
+                  // Wait for both popstates (custom fields modal + this modal)
+                  // to settle before opening settings.
+                  let remaining = 2;
+                  const onPopstate = () => {
+                    if (--remaining === 0) {
+                      window.removeEventListener('popstate', onPopstate);
+                      openModalsState.settingsTab = 'custom-fields';
+                      openModalsState.settings = true;
+                    }
+                  };
+                  window.addEventListener('popstate', onPopstate);
+                }
+              : undefined}
+          />
+        </div>
+        <Form.Button size="sm" loading={$submitting}>Save</Form.Button>
+      </div>
     </ModalFooter>
   </form>
 </Modal>

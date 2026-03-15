@@ -5,6 +5,7 @@ import {
 import type { CreateFlight } from '$lib/db/types';
 import { processAirTrailFile } from '$lib/import/airtrail';
 import { processAITAFile } from '$lib/import/aita';
+import { processByAirFile } from '$lib/import/byair';
 import { processFlightyFile } from '$lib/import/flighty';
 import { processFR24File } from '$lib/import/fr24';
 import { processJetLogFile } from '$lib/import/jetlog';
@@ -18,6 +19,13 @@ type ProcessResult = {
   flights: CreateFlight[];
   unknownAirports: Record<string, number[]>; // code -> flight indices
   unknownAirlines: Record<string, number[]>; // code -> flight indices
+  unknownUsers: Record<string, number[]>; // encoded user key -> flight indices
+  exportedUsers: {
+    id: string;
+    username: string;
+    displayName: string;
+    mappedUserId: string | null;
+  }[];
 };
 
 type Processor = (
@@ -25,15 +33,33 @@ type Processor = (
   options: PlatformOptions,
 ) => Promise<ProcessResult>;
 
+const withDefaultUnknownUsers = async (
+  fn: () => Promise<Omit<ProcessResult, 'unknownUsers'>>,
+): Promise<ProcessResult> => {
+  const res = await fn();
+  return {
+    ...res,
+    unknownUsers: {},
+    exportedUsers: [],
+  };
+};
+
 const processors: Record<PlatformValue, Processor> = {
   airtrail: async (content, options) => processAirTrailFile(content, options),
   'legacy-airtrail': async (content, options) =>
-    processLegacyAirTrailFile(content, options),
-  jetlog: async (content, options) => processJetLogFile(content, options),
-  fr24: async (content, options) => processFR24File(content, options),
-  aita: async (content, options) => processAITAFile(content, options),
-  tripit: async (content, options) => processTripItFile(content, options),
-  flighty: async (content, options) => processFlightyFile(content, options),
+    withDefaultUnknownUsers(() => processLegacyAirTrailFile(content, options)),
+  jetlog: async (content, options) =>
+    withDefaultUnknownUsers(() => processJetLogFile(content, options)),
+  fr24: async (content, options) =>
+    withDefaultUnknownUsers(() => processFR24File(content, options)),
+  aita: async (content, options) =>
+    withDefaultUnknownUsers(() => processAITAFile(content, options)),
+  tripit: async (content, options) =>
+    withDefaultUnknownUsers(() => processTripItFile(content, options)),
+  flighty: async (content, options) =>
+    withDefaultUnknownUsers(() => processFlightyFile(content, options)),
+  byair: async (content, options) =>
+    withDefaultUnknownUsers(() => processByAirFile(content, options)),
 };
 
 export const processFile = async (

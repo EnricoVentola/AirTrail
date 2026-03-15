@@ -6,14 +6,20 @@ import { z } from 'zod';
 import { db } from '$lib/db';
 import {
   createFlightPrimitive,
+  createFlightPrimitiveWithConnection,
   createManyFlightsPrimitive,
   getFlightPrimitive,
   listFlightBaseQuery,
   listFlightPrimitive,
   updateFlightPrimitive,
+  updateFlightPrimitiveWithConnection,
 } from '$lib/db/queries';
 import type { DB } from '$lib/db/schema';
 import type { CreateFlight, Flight, User } from '$lib/db/types';
+import {
+  CustomFieldValidationError,
+  persistEntityCustomFields,
+} from '$lib/server/utils/custom-fields';
 import { distanceBetween } from '$lib/utils';
 import {
   estimateFlightDuration,
@@ -24,6 +30,48 @@ import {
 } from '$lib/utils/datetime';
 import type { ErrorActionResult } from '$lib/utils/forms';
 import type { flightSchema } from '$lib/zod/flight';
+
+const assertDateOrder = (
+  start: Date | null | undefined,
+  end: Date | null | undefined,
+): boolean => {
+  if (!start || !end) return true;
+  return !isBefore(end, start);
+};
+
+export const validateFlightDates = (flight: CreateFlight): string | null => {
+  const pairs: [string | null, string | null, string][] = [
+    [flight.departure, flight.arrival, 'Arrival must be after departure'],
+    [
+      flight.departureScheduled,
+      flight.arrivalScheduled,
+      'Scheduled arrival must be after scheduled departure',
+    ],
+    [
+      flight.takeoffScheduled,
+      flight.landingScheduled,
+      'Scheduled landing must be after scheduled takeoff',
+    ],
+    [
+      flight.takeoffActual,
+      flight.landingActual,
+      'Actual landing must be after actual takeoff',
+    ],
+  ];
+
+  for (const [start, end, message] of pairs) {
+    if (
+      !assertDateOrder(
+        start ? parseISO(start) : null,
+        end ? parseISO(end) : null,
+      )
+    ) {
+      return message;
+    }
+  }
+
+  return null;
+};
 
 export const listFlightsQuery = (userId: string) => {
   return listFlightBaseQuery(db, userId);
@@ -66,19 +114,31 @@ export const validateAndSaveFlight = async (
   const from = data.from;
   const to = data.to;
 
-  const departureDate = parseISO(data.departure);
+  // Either departure or departureScheduled must be set
+  if (!data.departure && !data.departureScheduled) {
+    return pathError('departure', 'Select a departure date');
+  }
+
+  // Use departure if available, otherwise fall back to departureScheduled for the date field
+  const primaryDepartureDate = data.departure ?? data.departureScheduled;
+  const departureDate = parseISO(primaryDepartureDate!);
   if (isBeforeEpoch(departureDate)) {
     // Y2K38
-    return pathError('departure', 'Too far in the past');
+    return pathError(
+      data.departure ? 'departure' : 'departureScheduled',
+      'Too far in the past',
+    );
   }
 
   let departure: TZDate | undefined;
-  try {
-    departure = data.departureTime
-      ? mergeTimeWithDate(data.departure, data.departureTime, from.tz)
-      : undefined;
-  } catch {
-    return pathError('departureTime', 'Invalid time format');
+  if (data.departure) {
+    try {
+      departure = data.departureTime
+        ? mergeTimeWithDate(data.departure, data.departureTime, from.tz)
+        : undefined;
+    } catch {
+      return pathError('departureTime', 'Invalid time format');
+    }
   }
 
   const departureScheduledResult = parseDateTimeField(
@@ -159,8 +219,29 @@ export const validateAndSaveFlight = async (
   if (landingActualResult.error) return landingActualResult.error;
   const landingActual = landingActualResult.value;
 
-  if (arrival && departure && isBefore(arrival, departure)) {
+  if (!assertDateOrder(departure, arrival)) {
     return pathError('arrival', 'Arrival must be after departure');
+  }
+
+  if (!assertDateOrder(departureScheduled, arrivalScheduled)) {
+    return pathError(
+      'arrivalScheduled',
+      'Scheduled arrival must be after scheduled departure',
+    );
+  }
+
+  if (!assertDateOrder(takeoffScheduled, landingScheduled)) {
+    return pathError(
+      'landingScheduled',
+      'Scheduled landing must be after scheduled takeoff',
+    );
+  }
+
+  if (!assertDateOrder(takeoffActual, landingActual)) {
+    return pathError(
+      'landingActual',
+      'Actual landing must be after actual takeoff',
+    );
   }
 
   let duration: number | null = null;
@@ -186,6 +267,7 @@ export const validateAndSaveFlight = async (
     departureGate,
     arrivalTerminal,
     arrivalGate,
+    customFields = {},
   } = data;
 
   const values = {
@@ -235,8 +317,22 @@ export const validateAndSaveFlight = async (
     }
 
     try {
-      await updateFlight(updateId, values);
-    } catch {
+      await db.transaction().execute(async (trx) => {
+        await updateFlightPrimitiveWithConnection(trx, updateId, values);
+        await persistEntityCustomFields(trx, {
+          entityType: 'flight',
+          entityId: String(updateId),
+          values: customFields,
+        });
+      });
+    } catch (e) {
+      if (e instanceof CustomFieldValidationError) {
+        return {
+          success: false,
+          type: 'error',
+          message: e.message,
+        };
+      }
       return {
         success: false,
         type: 'error',
@@ -249,8 +345,26 @@ export const validateAndSaveFlight = async (
 
   let flightId: number;
   try {
-    flightId = await createFlight(values);
-  } catch (_) {
+    flightId = await db.transaction().execute(async (trx) => {
+      const createdFlightId = await createFlightPrimitiveWithConnection(
+        trx,
+        values,
+      );
+      await persistEntityCustomFields(trx, {
+        entityType: 'flight',
+        entityId: String(createdFlightId),
+        values: customFields,
+      });
+      return createdFlightId;
+    });
+  } catch (e) {
+    if (e instanceof CustomFieldValidationError) {
+      return {
+        success: false,
+        type: 'error',
+        message: e.message,
+      };
+    }
     return {
       success: false,
       type: 'error',

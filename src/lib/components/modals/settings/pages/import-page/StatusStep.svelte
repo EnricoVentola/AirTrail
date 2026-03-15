@@ -1,6 +1,8 @@
 <script lang="ts">
   import { Check, CircleAlert, ExternalLink } from '@o7/icon/lucide';
 
+  import { page } from '$app/state';
+
   import AirlinePicker from '$lib/components/form-fields/AirlinePicker.svelte';
   import AirportPicker from '$lib/components/form-fields/AirportPicker.svelte';
   import CreateAirline from '$lib/components/modals/settings/pages/data-page/airline/CreateAirline.svelte';
@@ -21,8 +23,8 @@
     onclose,
   }: {
     importedCount?: number;
-    unknownAirports?: Record<string, string[]>;
-    unknownAirlines?: Record<string, string[]>;
+    unknownAirports?: Record<string, number[]>;
+    unknownAirlines?: Record<string, number[]>;
     busy?: boolean;
     onreprocess?: (
       airportMapping: Record<string, Airport>,
@@ -36,6 +38,7 @@
 
   let airportMapping: Record<string, Airport> = $state({});
   let airlineMapping: Record<string, Airline> = $state({});
+
   const canReprocess = $derived(
     (Object.values(airportMapping).some(Boolean) ||
       Object.values(airlineMapping).some(Boolean)) &&
@@ -43,6 +46,8 @@
   );
   const mappedAirportCount = $derived(Object.keys(airportMapping).length);
   const mappedAirlineCount = $derived(Object.keys(airlineMapping).length);
+
+  const isAdmin = $derived(page.data.user?.role !== 'user');
 
   let createAirport = $state(false);
   let createAirline = $state(false);
@@ -72,7 +77,6 @@
   <h3 class="text-sm font-medium">Import Status</h3>
 
   <Card class="p-4">
-    <!-- Success Section -->
     <div class="flex items-start gap-3">
       <Check
         class="text-green-600 dark:text-green-500 mt-0.5 shrink-0"
@@ -90,7 +94,6 @@
     {#if unknownAirportCodes.length || unknownAirlineCodes.length}
       <Separator class="my-4" />
 
-      <!-- Unknown Codes Section -->
       <div class="flex items-start gap-3">
         <CircleAlert
           class="text-amber-600 dark:text-amber-500 mt-0.5 shrink-0"
@@ -98,14 +101,14 @@
         />
         <div class="flex-1">
           <p class="font-medium text-sm">
-            {unknownAirportCodes.length + unknownAirlineCodes.length} Unknown {pluralize(
+            {unknownAirportCodes.length + unknownAirlineCodes.length} Unknown
+            {pluralize(
               unknownAirportCodes.length + unknownAirlineCodes.length,
               'Code',
             )}
           </p>
           <p class="text-sm text-muted-foreground mt-0.5">
-            The following codes were not found in our database. Match them to
-            existing entries or create new ones.
+            Match unknown airports and airlines, then re-import.
           </p>
         </div>
       </div>
@@ -128,7 +131,9 @@
                     <AirportPicker
                       placeholder="Search for airport..."
                       onchange={(airport) => setAirportMapping(code, airport)}
-                      onCreateNew={() => (createAirport = true)}
+                      onCreateNew={isAdmin
+                        ? () => (createAirport = true)
+                        : undefined}
                       disabled={busy}
                       compact
                     />
@@ -137,6 +142,7 @@
               {/each}
             </div>
           {/if}
+
           {#if unknownAirlineCodes.length}
             <div class="space-y-2" class:mt-4={unknownAirportCodes.length}>
               <p class="text-xs font-medium text-muted-foreground uppercase">
@@ -153,7 +159,9 @@
                     <AirlinePicker
                       placeholder="Search for airline..."
                       onchange={(airline) => setAirlineMapping(code, airline)}
-                      onCreateNew={() => (createAirline = true)}
+                      onCreateNew={isAdmin
+                        ? () => (createAirline = true)
+                        : undefined}
                       disabled={busy}
                       compact
                     />
@@ -212,5 +220,7 @@
   </Card>
 </div>
 
-<CreateAirport bind:open={createAirport} withoutTrigger />
-<CreateAirline bind:open={createAirline} withoutTrigger />
+{#if isAdmin}
+  <CreateAirport bind:open={createAirport} withoutTrigger />
+  <CreateAirline bind:open={createAirline} withoutTrigger />
+{/if}
