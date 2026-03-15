@@ -6,11 +6,14 @@ import type { RequestHandler } from './$types';
 import { getAircraftByIcao } from '$lib/server/utils/aircraft';
 import { getAirlineByIcao } from '$lib/server/utils/airline';
 import { getAirportByIcao } from '$lib/server/utils/airport';
+import { getFlightRoute } from '$lib/server/utils/flight-lookup/flight-lookup';
 import { apiError, unauthorized, validateApiKey } from '$lib/server/utils/api';
+import { format } from 'date-fns';
 import { validateAndSaveFlight } from '$lib/server/utils/flight';
 import { aircraftSchema } from '$lib/zod/aircraft';
 import { airlineSchema } from '$lib/zod/airline';
 import { flightSchema } from '$lib/zod/flight';
+
 
 const defaultFlight = {
   // from, to and departure are required
@@ -85,8 +88,95 @@ export const POST: RequestHandler = async ({ request }) => {
         : null,
   };
 
-  const parsed = saveApiFlightSchema.safeParse(flight);
+  let parsed = saveApiFlightSchema.safeParse(flight);
+  let lookupAttempted = false;
+  let lookupFound = false;
+  let lookupNoElapsedMatch = false;
+
+  // If initial validation fails but flight number is provided, try lookup
+  console.log('Initial parse success:', parsed.success);
+  console.log('body.flightNumber:', body.flightNumber);
+  console.log('body.from:', body.from, 'body.to:', body.to);
+  
+  if (!parsed.success && body.flightNumber && (!body.from || !body.to)) {
+    console.log('Attempting lookup...');
+    lookupAttempted = true;
+    try {
+const opts = body.departure
+        ? { date: new Date(body.departure.split('T')[0]) }
+        : { date: new Date() };
+      const routes = await getFlightRoute(body.flightNumber, opts);
+      if (Array.isArray(routes) && routes.length > 0) {
+        const userProvidedDeparture = !!body.departure;
+        let chosen: typeof routes[0] | null = null;
+
+        if (userProvidedDeparture) {
+          chosen = routes[0] ?? null;
+        } else {
+          const now = Date.now();
+          chosen = routes.find((r) => r.arrival && r.arrival.getTime() <= now) ?? null;
+          if (!chosen && routes.length > 0) {
+            lookupNoElapsedMatch = true;
+          }
+        }
+
+        if (chosen) {
+          flight.from = flight.from ?? chosen.from?.icao;
+          flight.to = flight.to ?? chosen.to?.icao;
+          flight.airline = flight.airline ?? chosen.airline?.icao ?? flight.airline;
+          flight.aircraft = flight.aircraft ?? chosen.aircraft?.icao ?? flight.aircraft;
+          flight.aircraftReg = flight.aircraftReg ?? chosen.aircraftReg ?? null;
+
+          if (chosen.departure) {
+            flight.departure = chosen.departure.toISOString();
+            flight.departureTime = format(chosen.departure, 'HH:mm');
+          }
+          if (chosen.arrival) {
+            flight.arrival = chosen.arrival.toISOString();
+            flight.arrivalTime = format(chosen.arrival, 'HH:mm');
+          }
+          if (chosen.departureScheduled) {
+            flight.departureScheduled = chosen.departureScheduled.toISOString();
+            flight.departureScheduledTime = format(chosen.departureScheduled, 'HH:mm');
+          }
+          if (chosen.arrivalScheduled) {
+            flight.arrivalScheduled = chosen.arrivalScheduled.toISOString();
+            flight.arrivalScheduledTime = format(chosen.arrivalScheduled, 'HH:mm');
+          }
+
+          flight.departureTerminal = flight.departureTerminal ?? chosen.departureTerminal ?? null;
+          flight.departureGate = flight.departureGate ?? chosen.departureGate ?? null;
+          flight.arrivalTerminal = flight.arrivalTerminal ?? chosen.arrivalTerminal ?? null;
+          flight.arrivalGate = flight.arrivalGate ?? chosen.arrivalGate ?? null;
+
+          parsed = saveApiFlightSchema.safeParse(flight);
+          if (parsed.success) {
+            lookupFound = true;
+            console.log('Lookup succeeded, flight populated');
+          } else {
+            console.log('Lookup populated flight but re-parse failed:', parsed.error.errors);
+          }
+        } else {
+          console.log('Lookup did not find suitable route. userProvidedDeparture:', userProvidedDeparture, 'routes:', routes.length);
+        }
+      } else {
+        console.log('Lookup returned no routes');
+      }
+    } catch (e) {
+      // Lookup failed; fall through to validation error handling
+      console.log('Lookup threw error:', e);
+    }
+  } else {
+    console.log('Skipping lookup:', { parsed_success: parsed.success, hasFlightNumber: !!body.flightNumber, hasFrom: !!body.from, hasTo: !!body.to });
+  }
+
   if (!parsed.success) {
+    if (lookupAttempted && !lookupFound && body.flightNumber) {
+      if (lookupNoElapsedMatch) {
+        return apiError('Flight not yet arrived. Specify a departure date to look up past flights.');
+      }
+      return apiError('No matching flight route found for provided flight number');
+    }
     return json(
       { success: false, errors: parsed.error.errors },
       { status: 400 },
@@ -132,8 +222,22 @@ export const POST: RequestHandler = async ({ request }) => {
     airline,
   };
 
-  if (data.seats[0]?.userId === '<USER_ID>') {
-    data.seats[0].userId = user.id;
+  // Validate and normalize seat user IDs: ensure any provided userId exists in user table
+  for (const seat of data.seats) {
+    if (!seat.userId || seat.userId === '<USER_ID>') {
+      seat.userId = user.id;
+      continue;
+    }
+
+    const found = await db
+      .selectFrom('user')
+      .select('id')
+      .where('id', '=', seat.userId)
+      .executeTakeFirst();
+    console.log(`Seat userId validation: ${seat.userId} found=${!!found}`);
+    if (!found) {
+      return apiError(`Invalid seat userId: ${seat.userId}`);
+    }
   }
 
   const result = await validateAndSaveFlight(user, data);
