@@ -14,9 +14,12 @@
 
   import { resolve } from '$app/paths';
   import { page } from '$app/state';
+  import AdminScopeBanner from '$lib/components/admin/AdminScopeBanner.svelte';
   import { Button } from '$lib/components/ui/button';
+  import { flightScopeState } from '$lib/state.svelte';
   import { Modal } from '$lib/components/ui/modal';
-  import * as Select from '$lib/components/ui/select';
+  import ResponsiveFilters from '$lib/components/flight-filters/ResponsiveFilters.svelte';
+  import type { FlightFilters } from '$lib/components/flight-filters/types';
   import { type VisitedCountry, wasVisited } from '$lib/db/types';
   import {
     COUNTRY_BAR_CHARTS,
@@ -25,9 +28,14 @@
     FLIGHT_CHARTS,
     type ChartKey,
   } from '$lib/stats/aggregations';
-  import { type FlightData, kmToMiles } from '$lib/utils';
+  import { type FlightData } from '$lib/utils';
   import { Duration, nowIn } from '$lib/utils/datetime';
   import { round } from '$lib/utils/number';
+  import {
+    convertDistance,
+    distanceUnitLabel,
+    getPreferences,
+  } from '$lib/utils/preferences';
 
   type VisitedCountryList = VisitedCountry & {
     numeric: number;
@@ -36,48 +44,55 @@
 
   let {
     open = $bindable<boolean>(),
-    allFlights,
+    flights,
+    filteredFlights,
+    filters = $bindable(),
     visitedCountries = [],
-    disableUserSeatFiltering = false,
+    showFilters = true,
+    seatUserId,
+    showCountryStats = true,
+    onOpenFlight,
+    suppressEscapeNavigation = false,
   }: {
     open?: boolean;
-    allFlights: FlightData[];
+    flights: FlightData[];
+    filteredFlights: FlightData[];
+    filters: FlightFilters;
     visitedCountries?: VisitedCountryList[];
-    disableUserSeatFiltering?: boolean;
+    showFilters?: boolean;
+    seatUserId?: string;
+    showCountryStats?: boolean;
+    onOpenFlight?: (flightId: number) => void;
+    suppressEscapeNavigation?: boolean;
   } = $props();
 
-  let selectedYear = $state('all');
-
-  const years = $derived.by(() => {
-    const years = new Set<string>();
-    allFlights.forEach((f) => {
-      if (f.date) {
-        years.add(f.date.getFullYear().toString());
-      }
-    });
-    return Array.from(years).sort((a, b) => b.localeCompare(a));
-  });
+  const showScopeBanner = $derived(flightScopeState.scope !== 'mine');
 
   // Only show completed flights
-  const flights = $derived.by(() =>
-    allFlights.filter(
-      (f) =>
-        (!f.date ||
-          isBefore(f.arrival ? f.arrival : f.date, nowIn(f.to?.tz || 'UTC'))) &&
-        (selectedYear === 'all' ||
-          f.date?.getFullYear().toString() === selectedYear),
-    ),
+  const completedFlights = $derived.by(() =>
+    filteredFlights.filter((f) => {
+      if (!f.date) return true;
+
+      return isBefore(
+        f.arrival
+          ? f.arrival
+          : f.datePrecision === 'day'
+            ? f.date
+            : (f.dateEnd ?? f.date),
+        nowIn(f.to?.tz || 'UTC'),
+      );
+    }),
   );
 
-  let isMetric = $derived.by(() => page.data.user?.unit === 'metric');
+  const prefs = $derived(getPreferences(page.data.user));
   let totalDuration = $derived.by(() =>
     Duration.fromSeconds(
-      flights.reduce((acc, curr) => (acc += curr.duration ?? 0), 0),
+      completedFlights.reduce((acc, curr) => (acc += curr.duration ?? 0), 0),
     ),
   );
-  let flightCount = $derived(flights.length);
+  let flightCount = $derived(completedFlights.length);
   let totalDistance = $derived(
-    flights.reduce((acc, curr) => (acc += curr.distance ?? 0), 0),
+    completedFlights.reduce((acc, curr) => (acc += curr.distance ?? 0), 0),
   );
   let totalDurationParts = $derived({
     days: totalDuration.days,
@@ -86,29 +101,23 @@
   });
   let airports = $derived(
     new Set(
-      flights
+      completedFlights
         .filter((f) => f.from && f.to)
         .flatMap((f) => [f.from!.name, f.to!.name]),
     ).size,
   );
   let countriesCount = $derived(
-    selectedYear === 'all'
-      ? visitedCountries.filter(
-          (c) => c.status === 'visited' || c.status === 'lived',
-        ).length
-      : new Set(
-          flights
-            .filter((f) => f.from && f.to)
-            .flatMap((f) => [f.from!.country, f.to!.country]),
-        ).size,
+    visitedCountries.filter(
+      (c) => c.status === 'visited' || c.status === 'lived',
+    ).length,
   );
   let earthCircumnavigations = $derived(totalDistance / 40075);
 
   // Expanded chart state
   let activeChart: ChartKey | null = $state(null);
   let activeContinent: string | null = $state(null);
-  const user = $derived(page.data.user);
-  const ctx = $derived.by(() => ({ userId: user?.id }));
+  let wasOpen = $state(false);
+  const ctx = $derived.by(() => ({ userId: seatUserId }));
 
   const activeChartData = $derived.by(() => {
     if (!activeChart) return {} as Record<string, number>;
@@ -117,7 +126,7 @@
     }
     if (activeChart in FLIGHT_CHARTS) {
       const flightChartKey = activeChart as keyof typeof FLIGHT_CHARTS;
-      return FLIGHT_CHARTS[flightChartKey].aggregate(flights, ctx);
+      return FLIGHT_CHARTS[flightChartKey].aggregate(completedFlights, ctx);
     }
     return {} as Record<string, number>;
   });
@@ -135,17 +144,34 @@
     countriesByContinentDetails(visitedCountries),
   );
 
+  const pushDrilldownHistory = () => {
+    history.pushState({ statisticsDrilldown: true }, '');
+  };
+
   $effect(() => {
+    const closedFromDrilldown =
+      wasOpen && !open && (activeChart || activeContinent);
+    wasOpen = open;
+
+    if (closedFromDrilldown) {
+      activeChart = null;
+      activeContinent = null;
+      history.back();
+    }
+
     if (open) {
       setTimeout(() => {
-        flightCount = flights.length;
-        totalDistance = flights.reduce(
+        flightCount = completedFlights.length;
+        totalDistance = completedFlights.reduce(
           (acc, curr) => (acc += curr.distance ?? 0),
           0,
         );
         earthCircumnavigations = totalDistance / 40075;
         const duration = Duration.fromSeconds(
-          flights.reduce((acc, curr) => (acc += curr.duration ?? 0), 0),
+          completedFlights.reduce(
+            (acc, curr) => (acc += curr.duration ?? 0),
+            0,
+          ),
         );
         totalDurationParts = {
           days: duration.days,
@@ -153,7 +179,7 @@
           minutes: duration.minutes,
         };
         airports = new Set(
-          flights
+          completedFlights
             .filter((f) => f.from && f.to)
             .flatMap((f) => [f.from!.name, f.to!.name]),
         ).size;
@@ -171,12 +197,19 @@
 </script>
 
 <svelte:window
-  onkeydown={(e) => {
-    if (e.key !== 'Escape') return;
+  onpopstate={(event) => {
+    if (!open || event.state?.statisticsDrilldown) return;
     if (activeContinent) {
       activeContinent = null;
     } else if (activeChart) {
       activeChart = null;
+    }
+  }}
+  onkeydown={(e) => {
+    if (suppressEscapeNavigation) return;
+    if (e.key !== 'Escape') return;
+    if (activeContinent || activeChart) {
+      history.back();
     } else if (open) {
       open = false;
     }
@@ -196,14 +229,16 @@
     <BarChartDrillDown
       continent={activeContinent}
       countries={countriesByContinentDetailsData[activeContinent] || []}
-      onBack={() => (activeContinent = null)}
+      onBack={() => history.back()}
     />
   {:else if activeChart}
     <ChartDrillDown
       chartKey={activeChart}
       data={activeChartData}
-      {flights}
-      onBack={() => (activeChart = null)}
+      flights={completedFlights}
+      onBack={() => history.back()}
+      {onOpenFlight}
+      {seatUserId}
     />
   {:else}
     <div class="space-y-4">
@@ -211,20 +246,13 @@
         class="flex flex-col sm:flex-row items-start sm:items-center justify-between pr-2 sm:pr-4 md:pr-8"
       >
         <h2 class="text-3xl font-bold tracking-tight">Statistics</h2>
-        <div class="mt-3 sm:mt-0">
-          <Select.Root type="single" bind:value={selectedYear}>
-            <Select.Trigger class="w-[180px]">
-              {selectedYear === 'all' ? 'All Time' : selectedYear}
-            </Select.Trigger>
-            <Select.Content>
-              <Select.Item value="all" label="All Time" />
-              {#each years as year}
-                <Select.Item value={year} label={year} />
-              {/each}
-            </Select.Content>
-          </Select.Root>
-        </div>
       </div>
+      {#if showScopeBanner}
+        <AdminScopeBanner />
+      {/if}
+      {#if showFilters}
+        <ResponsiveFilters {flights} bind:filters />
+      {/if}
       <div class="grid gap-4 pb-2 md:grid-cols-2 lg:grid-cols-5">
         <StatsCard class="py-4 px-8">
           <h3 class="text-sm font-medium">Flights</h3>
@@ -236,14 +264,12 @@
           <h3 class="text-sm font-medium">Distance</h3>
           <span class="text-2xl font-bold">
             <NumberFlow
-              value={isMetric ? totalDistance : kmToMiles(totalDistance)}
-              format={{
-                style: 'unit',
-                unit: isMetric ? 'kilometer' : 'mile',
-                unitDisplay: 'short',
-                maximumFractionDigits: 0,
-              }}
+              value={convertDistance(totalDistance, prefs)}
+              format={{ maximumFractionDigits: 0 }}
             />
+            <span class="text-lg font-medium">
+              {distanceUnitLabel(prefs)}
+            </span>
             (<NumberFlow value={round(earthCircumnavigations, 2)} />x 🌎)
           </span>
         </StatsCard>
@@ -269,45 +295,53 @@
             <NumberFlow value={airports} />
           </span>
         </StatsCard>
-        <StatsCard class="py-4 px-8">
-          <div class="flex items-center justify-between gap-4">
-            <div class="flex flex-col">
-              <h3 class="text-sm font-medium">Countries</h3>
-              <span class="text-2xl font-bold">
-                <NumberFlow value={countriesCount} />
-              </span>
+        {#if showCountryStats}
+          <StatsCard class="py-4 px-8">
+            <div class="flex items-center justify-between gap-4">
+              <div class="flex flex-col">
+                <h3 class="text-sm font-medium">Countries</h3>
+                <span class="text-2xl font-bold">
+                  <NumberFlow value={countriesCount} />
+                </span>
+              </div>
+              {#if countriesCount === 0}
+                <Button
+                  href={resolve('/visited-countries')}
+                  variant="secondary"
+                  size="sm"
+                >
+                  <Plus size={16} />
+                  Add
+                </Button>
+              {/if}
             </div>
-            {#if countriesCount === 0}
-              <Button
-                href={resolve('/visited-countries')}
-                variant="secondary"
-                size="sm"
-              >
-                <Plus size={16} />
-                Add
-              </Button>
-            {/if}
-          </div>
-        </StatsCard>
+          </StatsCard>
+        {/if}
       </div>
       <h3 class="text-2xl font-bold tracking-tight pt-4">Flight Statistics</h3>
       <PieCharts
-        {flights}
-        onOpenChart={(key) => (activeChart = key)}
-        {disableUserSeatFiltering}
+        flights={completedFlights}
+        onOpenChart={(key) => {
+          activeChart = key;
+          pushDrilldownHistory();
+        }}
+        {seatUserId}
       />
       <div class="flex flex-col md:flex-row gap-4">
-        <FlightsPerMonth {flights} />
-        <FlightsPerWeekday {flights} />
+        <FlightsPerMonth flights={completedFlights} />
+        <FlightsPerWeekday flights={completedFlights} />
       </div>
-      {#if selectedYear === 'all'}
+      {#if showCountryStats}
         <h3 class="text-2xl font-bold tracking-tight pt-4">
           Country Statistics
         </h3>
         <div class="grid gap-4 pb-2 md:grid-cols-2 xl:grid-cols-3">
           <div
             class="cursor-pointer"
-            onclick={() => (activeChart = 'visited-country-status')}
+            onclick={() => {
+              activeChart = 'visited-country-status';
+              pushDrilldownHistory();
+            }}
           >
             <PieChart title="Visited Country Status" data={countryStatusData} />
           </div>
@@ -315,7 +349,10 @@
         <BarChart
           title="Countries by Continent"
           data={countriesByContinentData}
-          onBarClick={(continent) => (activeContinent = continent)}
+          onBarClick={(continent) => {
+            activeContinent = continent;
+            pushDrilldownHistory();
+          }}
         />
       {/if}
     </div>

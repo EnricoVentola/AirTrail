@@ -6,6 +6,8 @@ import { authedProcedure, publicProcedure, router } from '../trpc';
 
 import { db } from '$lib/db';
 import { createApiKey } from '$lib/server/utils/auth';
+import { publicUserSelect } from '$lib/server/utils/user';
+import { updatePreferencesSchema } from '$lib/zod/user';
 
 export const userRouter = router({
   me: authedProcedure.query(({ ctx: { user } }) => {
@@ -50,7 +52,7 @@ export const userRouter = router({
     return result.numDeletedRows > 0;
   }),
   list: authedProcedure.query(async () => {
-    return db.selectFrom('user').selectAll().execute();
+    return db.selectFrom('user').select(publicUserSelect).execute();
   }),
   listApiKeys: authedProcedure.query(async ({ ctx }) => {
     return db
@@ -73,5 +75,16 @@ export const userRouter = router({
         .where('userId', '=', ctx.user.id)
         .executeTakeFirst();
       return result.numDeletedRows > 0;
+    }),
+  updatePreferences: authedProcedure
+    .input(updatePreferencesSchema)
+    .mutation(async ({ ctx, input }) => {
+      if (Object.keys(input).length === 0) return true;
+      const result = await db
+        .updateTable('user')
+        .set(input)
+        .where('id', '=', ctx.user.id)
+        .executeTakeFirst();
+      return Number(result.numUpdatedRows) > 0;
     }),
 });

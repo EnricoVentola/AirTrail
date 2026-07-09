@@ -91,6 +91,10 @@ export type flight = {
     id: Generated<number>;
     date: string;
     /**
+     * @kyselyType('day' | 'month' | 'year')
+     */
+    datePrecision: Generated<'day' | 'month' | 'year'>;
+    /**
      * YYYY-MM-DDTHH:mm:ss.sssZ (ISO-8601)
      */
     departure: string | null;
@@ -139,6 +143,26 @@ export type flight = {
     aircraftId: number | null;
     airlineId: number | null;
 };
+export type flight_track = {
+    flightId: number;
+    track: unknown;
+    /**
+     * @kyselyType('gpx' | 'kml' | 'csv')
+     */
+    sourceFormat: 'gpx' | 'kml' | 'csv';
+    sourceName: string | null;
+    pointCount: number;
+    createdAt: Generated<Timestamp>;
+    updatedAt: Generated<Timestamp>;
+};
+export type oauth_link_token = {
+    id: string;
+    token: string;
+    userId: string;
+    oauthSub: string;
+    expiresAt: Timestamp;
+    createdAt: Generated<Timestamp>;
+};
 export type public_share = {
     id: Generated<number>;
     userId: string;
@@ -154,6 +178,7 @@ export type public_share = {
     showAirlines: Generated<boolean>;
     showAircraft: Generated<boolean>;
     showTimes: Generated<boolean>;
+    showTracks: Generated<boolean>;
     showDates: Generated<boolean>;
     showSeat: Generated<boolean>;
 };
@@ -184,16 +209,44 @@ export type user = {
     id: string;
     username: string;
     displayName: string;
-    /**
-     * @kyselyType('metric' | 'imperial')
-     */
-    unit: 'metric' | 'imperial';
     password: string | null;
     /**
      * @kyselyType('user' | 'admin' | 'owner')
      */
     role: 'user' | 'admin' | 'owner';
     oauthId: string | null;
+    /**
+     * @kyselyType('km' | 'mi' | 'nm')
+     */
+    distanceUnit: Generated<'km' | 'mi' | 'nm'>;
+    /**
+     * @kyselyType('kt' | 'mph' | 'kmh' | 'ms')
+     */
+    windSpeedUnit: Generated<'kt' | 'mph' | 'kmh' | 'ms'>;
+    /**
+     * @kyselyType('c' | 'f')
+     */
+    temperatureUnit: Generated<'c' | 'f'>;
+    /**
+     * @kyselyType('hpa' | 'inhg')
+     */
+    pressureUnit: Generated<'hpa' | 'inhg'>;
+    /**
+     * @kyselyType('12h' | '24h' | 'auto')
+     */
+    timeFormat: Generated<'12h' | '24h' | 'auto'>;
+    /**
+     * @kyselyType('iso' | 'us' | 'eu' | 'auto')
+     */
+    dateFormat: Generated<'iso' | 'us' | 'eu' | 'auto'>;
+    /**
+     * @kyselyType('mon' | 'sun' | 'auto')
+     */
+    weekStartsOn: Generated<'mon' | 'sun' | 'auto'>;
+    /**
+     * @kyselyType('airport' | 'utc' | 'system')
+     */
+    flightTimeDisplay: Generated<'airport' | 'utc' | 'system'>;
 };
 export type visited_country = {
     id: Generated<number>;
@@ -217,6 +270,8 @@ export type DB = {
     customFieldDefinition: custom_field_definition;
     customFieldValue: custom_field_value;
     flight: flight;
+    flightTrack: flight_track;
+    oauthLinkToken: oauth_link_token;
     publicShare: public_share;
     seat: seat;
     session: session;

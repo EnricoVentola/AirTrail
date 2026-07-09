@@ -4,38 +4,65 @@ import type {
   airport,
   api_key,
   flight,
+  flight_track,
   public_share,
   seat,
   user,
   visited_country,
 } from '$lib/db/schema';
+import type { FlightTrackInput } from '$lib/track/schema';
 import type { Insertable, Selectable } from 'kysely';
 
 export type FullUser = Selectable<user>;
 export type User = Omit<FullUser, 'password'>;
+export const publicUserFields = [
+  'id',
+  'username',
+  'displayName',
+  'role',
+  'distanceUnit',
+  'windSpeedUnit',
+  'temperatureUnit',
+  'pressureUnit',
+  'timeFormat',
+  'dateFormat',
+  'weekStartsOn',
+  'flightTimeDisplay',
+] as const satisfies readonly (keyof User)[];
+export type PublicUser = Pick<User, (typeof publicUserFields)[number]>;
+export type PageUser = PublicUser & { hasOAuthLinked: boolean };
 export type ApiKey = Omit<Selectable<api_key>, 'key' | 'userId'>;
 export type Aircraft = Selectable<aircraft>;
 export type Airline = Selectable<airline>;
 export type Airport = Selectable<airport>;
 export type CreateAirport = Insertable<airport>;
 export type Seat = Selectable<seat>;
+export type FlightSeat = Seat & {
+  user: Pick<User, 'id' | 'displayName' | 'username'> | null;
+};
 export type Flight = Omit<
   Selectable<flight>,
   'fromId' | 'toId' | 'aircraftId' | 'airlineId'
 > & {
   from: Airport | null;
   to: Airport | null;
-  seats: Seat[];
+  seats: FlightSeat[];
   aircraft: Aircraft | null;
   airline: Airline | null;
 };
+export type FlightTrack = Selectable<flight_track>;
 type CreateFlightAirport = Partial<Airport>;
-export type CreateFlight = Omit<Flight, 'id' | 'seats'> & {
+type FlightRecord = Omit<
+  Selectable<flight>,
+  'id' | 'fromId' | 'toId' | 'aircraftId' | 'airlineId'
+>;
+export type CreateFlight = FlightRecord & {
   from: CreateFlightAirport | null;
   to: CreateFlightAirport | null;
   aircraft: Aircraft | null;
   airline: Airline | null;
   seats: Omit<Seat, 'flightId' | 'id'>[];
+  track?: FlightTrackInput | null;
 };
 export type PublicShare = Selectable<public_share>;
 export type VisitedCountry = Selectable<visited_country>;
@@ -81,6 +108,8 @@ export const SeatClasses = [
   'private',
 ] as const;
 export const FlightReasons = ['leisure', 'business', 'crew', 'other'] as const;
+export const FlightDatePrecisions = ['day', 'month', 'year'] as const;
+export type FlightDatePrecision = (typeof FlightDatePrecisions)[number];
 
 export const VisitedCountryStatus = [
   'lived',

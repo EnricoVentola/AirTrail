@@ -5,6 +5,7 @@
   import type { SuperForm } from 'sveltekit-superforms';
   import { z } from 'zod';
 
+  import { page } from '$app/state';
   import { Button } from '$lib/components/ui/button';
   import * as Form from '$lib/components/ui/form';
   import { Input } from '$lib/components/ui/input';
@@ -18,7 +19,8 @@
   } from '$lib/utils/datetime';
   import type { flightSchema } from '$lib/zod/flight';
 
-  const displayLocale = isUsingAmPm() ? 'en-US' : 'fr-FR';
+  const displayLocale = () =>
+    isUsingAmPm(page.data.user?.timeFormat) ? 'en-US' : 'fr-FR';
 
   type FlightFormData = z.infer<typeof flightSchema>;
   type TimetableTab = 'scheduled' | 'actual';
@@ -53,6 +55,7 @@
 
   let lookupResults: LookupResult[] | null = $state(null);
   let isSearching = $state(false);
+  let isApplying = $state(false);
 
   function clearResults() {
     lookupResults = null;
@@ -88,7 +91,7 @@
     return null;
   }
 
-  function applyLookupResult(result: LookupResult) {
+  async function applyLookupResult(result: LookupResult) {
     if (!result) return;
 
     if (
@@ -100,10 +103,23 @@
       return;
     }
 
+    let aircraft = result.aircraft ?? null;
+    if (!aircraft && result.aircraftReg) {
+      isApplying = true;
+      try {
+        aircraft = await api.flight.lookupAircraftByReg.query(
+          result.aircraftReg,
+        );
+      } catch {
+        // ignore, this field is not required
+      }
+      isApplying = false;
+    }
+
     $formData.from = result.from;
     $formData.to = result.to;
     $formData.airline = result.airline ?? null;
-    $formData.aircraft = result.aircraft ?? null;
+    $formData.aircraft = aircraft;
     $formData.aircraftReg = result.aircraftReg ?? null;
 
     if (result.arrival && result.departure && !isFutureFlight(result)) {
@@ -111,13 +127,13 @@
         result.departure,
         "yyyy-MM-dd'T'00:00:00.000'Z'",
       );
-      $formData.departureTime = formatAsTime(result.departure, displayLocale);
+      $formData.departureTime = formatAsTime(result.departure, displayLocale());
 
       $formData.arrival = format(
         result.arrival,
         "yyyy-MM-dd'T'00:00:00.000'Z'",
       );
-      $formData.arrivalTime = formatAsTime(result.arrival, displayLocale);
+      $formData.arrivalTime = formatAsTime(result.arrival, displayLocale());
     }
 
     // Apply scheduled times. For future flights, fallback to lookup time when schedule is missing.
@@ -131,7 +147,7 @@
       );
       $formData.departureScheduledTime = formatAsTime(
         departureScheduleSource,
-        displayLocale,
+        displayLocale(),
       );
     }
 
@@ -145,7 +161,7 @@
       );
       $formData.arrivalScheduledTime = formatAsTime(
         arrivalScheduleSource,
-        displayLocale,
+        displayLocale(),
       );
     }
 
@@ -272,7 +288,7 @@
         />
         <Button
           onclick={lookupFlight}
-          disabled={!$formData.flightNumber || isSearching}
+          disabled={!$formData.flightNumber || isSearching || isApplying}
           variant="secondary"
           class="h-full"
           >{isSearching ? 'Searching...' : 'Search'}
@@ -289,7 +305,12 @@
       class="flex items-center justify-between text-sm text-muted-foreground"
     >
       <span>Select your flight</span>
-      <Button variant="ghost" size="sm" onclick={clearResults}>Clear</Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        onclick={clearResults}
+        disabled={isApplying}>Clear</Button
+      >
     </div>
 
     <div class="space-y-1.5">
@@ -298,6 +319,7 @@
         {@const isFlightToday = primaryDate && isToday(primaryDate)}
         <button
           onclick={() => applyLookupResult(r)}
+          disabled={isApplying}
           class="group w-full rounded-lg border bg-card p-3 text-left transition-all hover:border-primary hover:shadow-sm active:scale-[0.98] {isFlightToday
             ? 'border-primary/40 bg-primary/5'
             : ''}"

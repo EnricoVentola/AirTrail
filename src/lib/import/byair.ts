@@ -117,12 +117,13 @@ export const processByAirFile = async (
     throw new Error('User not found');
   }
 
-  const [data, error] = parseCsv(input, ByAirFlight);
-  if (data.length === 0 || error) {
+  const { rows: data, skipped } = parseCsv(input, ByAirFlight);
+  if (data.length === 0) {
     return {
       flights: [],
       unknownAirports: {},
       unknownAirlines: {},
+      skippedRows: skipped.length,
     };
   }
 
@@ -233,6 +234,7 @@ export const processByAirFile = async (
       takeoffActual: null,
       landingScheduled: null,
       landingActual: null,
+      datePrecision: 'day',
       departureTerminal: null,
       departureGate: null,
       arrivalTerminal: null,
@@ -261,5 +263,6 @@ export const processByAirFile = async (
     flights,
     unknownAirports,
     unknownAirlines,
+    skippedRows: skipped.length,
   };
 };

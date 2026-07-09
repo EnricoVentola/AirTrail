@@ -2,9 +2,13 @@ import { TZDate } from '@date-fns/tz';
 import { isAfter } from 'date-fns';
 
 import { page } from '$app/state';
-import type { Airport, Flight } from '$lib/db/types';
+import type { Airport, Flight, FlightSeat } from '$lib/db/types';
 import { distanceBetween, toTitleCase } from '$lib/utils';
-import { nowIn, parseLocalISO, parseLocalizeISO } from '$lib/utils/datetime';
+import {
+  getFlightDateRange,
+  nowIn,
+  parseLocalizeISO,
+} from '$lib/utils/datetime';
 
 type ExcludedType<T, U> = {
   [P in keyof T as P extends keyof U ? never : P]: T[P];
@@ -12,6 +16,8 @@ type ExcludedType<T, U> = {
 
 type FlightOverrides = {
   date: TZDate | null;
+  dateStart: TZDate | null;
+  dateEnd: TZDate | null;
   departure: TZDate | null;
   arrival: TZDate | null;
   distance: number | null;
@@ -25,27 +31,30 @@ export const prepareFlightData = (data: Flight[]): FlightData[] => {
 
   return data
     .map((flight) => {
+      const { start: dateStart, end: dateEnd } = getFlightDateRange(
+        flight.date,
+        flight.datePrecision,
+        flight.from?.tz ?? 'UTC',
+      );
+      const hasExactDateTime = flight.datePrecision === 'day';
+
       const departure =
-        flight.departure && flight.from
+        hasExactDateTime && flight.departure && flight.from
           ? parseLocalizeISO(flight.departure, flight.from.tz)
-          : flight.departure
+          : hasExactDateTime && flight.departure
             ? parseLocalizeISO(flight.departure, 'UTC')
             : null;
 
       return {
         ...flight,
-        date:
-          departure ??
-          (flight.date && flight.from
-            ? parseLocalISO(`${flight.date}T00:00`, flight.from.tz)
-            : flight.date
-              ? parseLocalISO(`${flight.date}T00:00`, 'UTC')
-              : null),
+        date: departure ?? dateStart,
+        dateStart,
+        dateEnd,
         departure,
         arrival:
-          flight.arrival && flight.to
+          hasExactDateTime && flight.arrival && flight.to
             ? parseLocalizeISO(flight.arrival, flight.to.tz)
-            : flight.arrival
+            : hasExactDateTime && flight.arrival
               ? parseLocalizeISO(flight.arrival, 'UTC')
               : null,
         distance:
@@ -72,6 +81,7 @@ export const prepareFlightArcData = (data: FlightData[]) => {
       flights: ReturnType<typeof formatSimpleFlight>[];
       airlines: number[];
       exclusivelyFuture: boolean;
+      frequency: number;
     };
   } = {};
 
@@ -89,6 +99,7 @@ export const prepareFlightArcData = (data: FlightData[]) => {
         flights: [],
         airlines: [],
         exclusivelyFuture: false,
+        frequency: 1,
       };
     }
 
@@ -96,7 +107,7 @@ export const prepareFlightArcData = (data: FlightData[]) => {
 
     if (
       routeMap[key].flights.every(
-        (f) => f.date && isAfter(f.date, nowIn('UTC')),
+        (f) => f.dateStart && isAfter(f.dateStart, nowIn('UTC')),
       )
     ) {
       routeMap[key].exclusivelyFuture = true;
@@ -109,7 +120,21 @@ export const prepareFlightArcData = (data: FlightData[]) => {
     }
   });
 
-  return Object.values(routeMap);
+  const routes = Object.values(routeMap);
+
+  const MIN_FREQUENCY = 1;
+  const MAX_FREQUENCY = 3;
+  const counts = routes.map((r) => r.flights.length);
+  const rawMin = counts.length ? Math.min(...counts) : 0;
+  const rawMax = counts.length ? Math.max(...counts) : 0;
+  const span = rawMax - rawMin || 1;
+
+  routes.forEach((r) => {
+    const normalised = (r.flights.length - rawMin) / span;
+    r.frequency = normalised * (MAX_FREQUENCY - MIN_FREQUENCY) + MIN_FREQUENCY;
+  });
+
+  return routes;
 };
 
 export const prepareVisitedAirports = (data: FlightData[]) => {
@@ -178,20 +203,33 @@ export const prepareVisitedAirports = (data: FlightData[]) => {
 
 const formatSimpleFlight = (f: FlightData) => {
   return {
+    id: f.id,
     airports: [f.from?.id, f.to?.id],
     route: `${f.from?.iata ?? f.from?.icao ?? 'N/A'} - ${f.to?.iata ?? f.to?.icao ?? 'N/A'}`,
     date: f.date,
+    dateStart: f.dateStart,
+    datePrecision: f.datePrecision,
     airline: f.airline ?? '',
   };
 };
 
 export const formatSeat = (f: FlightData) => {
+  const userId = page.data.user?.id;
+  return formatSeatForUser(f, userId);
+};
+
+export const formatSeatForUser = (
+  f: FlightData,
+  userId: string | null | undefined,
+) => {
   const t = (s: string) => toTitleCase(s);
 
-  const userId = page.data.user?.id;
-  if (!userId) return null;
-
-  const s = f.seats.find((seat) => seat.userId === userId);
+  let s;
+  if (userId) {
+    s = f.seats.find((seat) => seat.userId === userId);
+  } else if (f.seats.length === 1) {
+    s = f.seats[0];
+  }
   if (!s) return null;
 
   if (s.seat && s.seatNumber && s.seatClass) {
@@ -210,4 +248,26 @@ export const formatSeat = (f: FlightData) => {
     return t(s.seat);
   }
   return null;
+};
+
+export const getSeatPassengerLabel = (seat: FlightSeat) => {
+  return seat.user?.displayName ?? seat.guestName ?? null;
+};
+
+export const getSeatPassengerToken = (seat: FlightSeat) => {
+  if (seat.userId) {
+    return `user:${seat.userId}`;
+  }
+
+  if (seat.guestName) {
+    return `guest:${seat.guestName}`;
+  }
+
+  return null;
+};
+
+export const getFlightPassengerLabels = (flight: FlightData) => {
+  return flight.seats
+    .map((seat) => getSeatPassengerLabel(seat))
+    .filter((value): value is string => Boolean(value));
 };

@@ -9,6 +9,7 @@
     FlightCustomFieldsModal,
     FlightForm,
     FlightTerminalGateModal,
+    FlightTrackModal,
   } from '$lib/components/modals/flight-form';
   import * as Form from '$lib/components/ui/form';
   import {
@@ -18,7 +19,7 @@
   } from '$lib/components/ui/modal';
   import { flightAddedState, openModalsState } from '$lib/state.svelte';
   import { trpc } from '$lib/trpc';
-  import { flightSchema } from '$lib/zod/flight';
+  import { flightFormSchema } from '$lib/zod/flight';
 
   let { open = $bindable() }: { open: boolean } = $props();
 
@@ -44,10 +45,10 @@
   };
 
   const form = superForm(
-    defaults<Infer<typeof flightSchema>>(zod(flightSchema)),
+    defaults<Infer<typeof flightFormSchema>>(zod(flightFormSchema)),
     {
       dataType: 'json',
-      validators: zod(flightSchema),
+      validators: zod(flightFormSchema),
       onSubmit({ cancel }) {
         $formData.customFields = toCustomFieldsPayload();
         if (!customFieldsModal?.validate()) {
@@ -58,6 +59,7 @@
         if (form.message) {
           if (form.message.type === 'success') {
             trpc.flight.list.utils.invalidate();
+            trpc.flightTrack.list.utils.invalidate();
             open = false;
             customFieldValues = {};
             flightAddedState.added = true;
@@ -90,6 +92,7 @@
       <div class="flex w-full items-center justify-between">
         <div class="flex items-center gap-2">
           <FlightTerminalGateModal {form} />
+          <FlightTrackModal {form} />
           <FlightCustomFieldsModal
             bind:this={customFieldsModal}
             definitions={$customFieldDefinitions.data ?? []}
@@ -112,7 +115,7 @@
               : undefined}
           />
         </div>
-        <Form.Button size="sm" loading={$submitting}>Add Flight</Form.Button>
+        <Form.Button size="sm" loading={$submitting}>Add flight</Form.Button>
       </div>
     </ModalFooter>
   </form>

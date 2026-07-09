@@ -1,3 +1,5 @@
+FROM johly/airtrail-airport-overlay:2026.5.23@sha256:05f30d8d73dca311f10931367fcb43f0701f0f7b6977fd9ff65dd264f29fea62 AS airport_overlay
+
 FROM oven/bun:debian AS base
 WORKDIR /app
 
@@ -21,13 +23,21 @@ FROM node:22-slim AS release
 WORKDIR /app
 COPY --from=install /temp/prod/node_modules node_modules
 COPY --from=build /app/build build
+COPY --from=airport_overlay /airport-overlay.pmtiles /app/build/client/airport-overlay.pmtiles
 COPY --from=build /app/package.json .
 COPY --from=build /app/prisma/migrations ./prisma/migrations
 
 COPY ./docker/migrate.js /app/docker/
+COPY ./docker/admin.js /app/docker/
+COPY ./docker/healthcheck.js /app/docker/
 COPY ./docker/entrypoint.sh /app/bin/
-RUN chmod +x /app/bin/entrypoint.sh
+COPY ./docker/airtrail-admin /app/bin/
+COPY ./docker/airtrail-healthcheck /app/bin/
+RUN chmod +x /app/bin/entrypoint.sh /app/bin/airtrail-admin /app/bin/airtrail-healthcheck
+
+ENV PATH="${PATH}:/app/bin"
 
 USER node
 EXPOSE 3000/tcp
+HEALTHCHECK --interval=5m --start-period=30s --start-interval=10s --retries=3 CMD ["airtrail-healthcheck"]
 ENTRYPOINT [ "/app/bin/entrypoint.sh" ]

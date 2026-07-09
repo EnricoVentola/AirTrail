@@ -1,23 +1,29 @@
 <script lang="ts">
   import type { TZDate } from '@date-fns/tz';
-  import { differenceInCalendarDays, differenceInSeconds } from 'date-fns';
+  import { differenceInSeconds } from 'date-fns';
   import { type DateValue, parseDate, Time } from '@internationalized/date';
   import { CalendarDays } from '@o7/icon/lucide';
-  import { DateField, TimeField } from 'bits-ui';
+  import { DateField } from 'bits-ui';
   import type { SuperForm } from 'sveltekit-superforms';
   import { z } from 'zod';
 
+  import { page } from '$app/state';
   import { Calendar } from '$lib/components/ui/calendar';
   import * as Form from '$lib/components/ui/form';
   import * as Popover from '$lib/components/ui/popover';
+  import { TimeInput } from '$lib/components/ui/time-input';
   import { cn } from '$lib/utils';
-  import {
-    dateValueFromISO,
-    formatAsTime,
-    isUsingAmPm,
-    mergeTimeWithDate,
-  } from '$lib/utils/datetime';
+  import { dateValueFromISO, mergeTimeWithDate } from '$lib/utils/datetime';
   import { formatTimeValue, parseTimeValue } from '$lib/utils/datetime/time';
+  import {
+    formatTime as formatTimeWithPrefs,
+    getPreferences,
+    pairToDisplay,
+    pairToStorage,
+    resolveDateLocale,
+    resolveFlightEditTimeZone,
+    resolveTimeLocale,
+  } from '$lib/utils/preferences';
   import type { flightSchema } from '$lib/zod/flight';
 
   type FlightFormData = z.infer<typeof flightSchema>;
@@ -67,32 +73,63 @@
   } = $props();
 
   const { form: formData, validate } = form;
-  const displayLocale = isUsingAmPm() ? 'en-US' : 'fr-FR';
   const fallbackTimezone =
     typeof Intl !== 'undefined'
       ? Intl.DateTimeFormat().resolvedOptions().timeZone
       : 'UTC';
-  const getFormValues = () => $formData as any;
-  const getValue = (field: DateFieldKey | TimeFieldKey) => {
-    return (getFormValues()[field] as string | null) ?? null;
+
+  const prefs = $derived(getPreferences(page.data.user));
+  const airportTz = $derived(timezone ?? fallbackTimezone);
+  const editTz = $derived(resolveFlightEditTimeZone(prefs, airportTz));
+  const editLocale = $derived(resolveTimeLocale(prefs));
+  const dateLocale = $derived(resolveDateLocale(prefs));
+
+  const getStored = (field: DateFieldKey | TimeFieldKey): string | null =>
+    (($formData as any)[field] as string | null) ?? null;
+
+  // editTz-local view of this cell's stored pair. The whole cell operates
+  // on these display values; conversion happens at the storage boundary.
+  const display = (): { date: string | null; time: string | null } =>
+    pairToDisplay(
+      getStored(dateField),
+      getStored(timeField),
+      airportTz,
+      editTz,
+    );
+  const getValue = (field: DateFieldKey | TimeFieldKey): string | null => {
+    const d = display();
+    return field === dateField ? d.date : d.time;
   };
 
   const setValue = (
     field: DateFieldKey | TimeFieldKey,
     value: string | null,
   ) => {
-    formData.update((current) => {
-      return {
-        ...current,
-        [field]: value,
-      };
-    });
+    const otherDate = field === dateField ? value : getValue(dateField);
+    const otherTime = field === timeField ? value : getValue(timeField);
+    if (!otherDate || !otherTime) {
+      formData.update((current) => ({ ...current, [field]: value }));
+      return;
+    }
+    const r = pairToStorage(otherDate, otherTime, editTz, airportTz);
+    formData.update((current) => ({
+      ...current,
+      [dateField]: r.date,
+      [timeField]: r.time,
+    }));
   };
+
+  // `defaultDate` / `defaultTime` arrive in airport-local storage form from
+  // the parent; surface them in the same editTz space as the rest of the cell.
+  const defaultPair = $derived(
+    pairToDisplay(defaultDate, defaultTime, airportTz, editTz),
+  );
 
   const applyDefaultDate = () => {
     if (dateValue) return;
-    if (defaultDate) {
-      const fallbackDate = dateValueFromISO(defaultDate);
+    const fallback = defaultPair.date;
+    if (fallback) {
+      const fallbackDate = dateValueFromISO(fallback);
       dateValue = fallbackDate;
       setValue(dateField, fallbackDate.toDate('UTC').toISOString());
       validateField(dateField);
@@ -101,8 +138,9 @@
 
   const applyDefaultDateTime = () => {
     if (!dateValue) {
-      if (defaultDate) {
-        const fallbackDate = dateValueFromISO(defaultDate);
+      const fallback = defaultPair.date;
+      if (fallback) {
+        const fallbackDate = dateValueFromISO(fallback);
         dateValue = fallbackDate;
         setValue(dateField, fallbackDate.toDate('UTC').toISOString());
         validateField(dateField);
@@ -110,8 +148,9 @@
     }
 
     if (!timeValue) {
-      if (defaultTime) {
-        const parsed = parseTimeValue(defaultTime);
+      const fallbackTime = defaultPair.time;
+      if (fallbackTime) {
+        const parsed = parseTimeValue(fallbackTime);
         if (parsed) {
           timeValue = parsed;
           setValue(timeField, formatTimeValue(parsed));
@@ -131,9 +170,9 @@
     tzId?: string | null,
   ) => {
     if (!date || !time) return null;
-    const timezone = tzId ?? fallbackTimezone;
+    const tz = tzId ?? fallbackTimezone;
     try {
-      return mergeTimeWithDate(date, time, timezone);
+      return mergeTimeWithDate(date, time, tz);
     } catch {
       return null;
     }
@@ -157,6 +196,13 @@
   let timeValue: Time | undefined = $state(
     getValue(timeField) ? parseTimeValue(getValue(timeField)!) : undefined,
   );
+
+  const clearTimeValue = () => {
+    if (!timeValue && !getValue(timeField)) return;
+    timeValue = undefined;
+    setValue(timeField, null);
+    validateField(timeField);
+  };
 
   $effect(() => {
     const dateString = getValue(dateField);
@@ -190,13 +236,15 @@
     }
   });
 
+  // TZDate built in editTz so its intrinsic tz formats correctly. Display
+  // values are interpreted as editTz-local.
   const currentDateTime = $derived.by(() =>
-    getDateTime(getValue(dateField), getValue(timeField), timezone),
+    getDateTime(getValue(dateField), getValue(timeField), editTz),
   );
 
   const displayTime = $derived.by(() => {
     if (currentDateTime) {
-      return formatAsTime(currentDateTime, displayLocale);
+      return formatTimeWithPrefs(currentDateTime, prefs, editTz);
     }
     if (timeValue) {
       return formatTimeValue(timeValue);
@@ -204,9 +252,21 @@
     return null;
   });
 
+  // Calendar-day offset evaluated in editTz so the "+1"/"-1" badge matches
+  // what the user sees in the field.
   const dayOffset = $derived.by(() => {
     if (!currentDateTime || !baseDateTime) return 0;
-    return differenceInCalendarDays(currentDateTime, baseDateTime);
+    const fmt = new Intl.DateTimeFormat('en-CA', {
+      timeZone: editTz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    const ymdToUtc = (d: Date) => Date.parse(`${fmt.format(d)}T00:00:00Z`);
+    const days = Math.round(
+      (ymdToUtc(currentDateTime) - ymdToUtc(baseDateTime)) / 86_400_000,
+    );
+    return Number.isFinite(days) ? days : 0;
   });
 
   const offsetLabel = $derived.by(() => {
@@ -355,7 +415,7 @@
                     }
                     granularity="day"
                     minValue={parseDate('1970-01-01')}
-                    locale={navigator.language}
+                    locale={dateLocale}
                   >
                     <div class="flex w-full flex-col gap-1.5">
                       <DateField.Input
@@ -423,14 +483,12 @@
                   <span class="text-xs font-semibold text-muted-foreground">
                     {label} time
                   </span>
-                  <TimeField.Root
+                  <TimeInput
                     bind:value={
                       () => timeValue,
                       (value) => {
                         if (!value) {
-                          timeValue = undefined;
-                          setValue(timeField, null);
-                          validateField(timeField);
+                          clearTimeValue();
                           return;
                         }
 
@@ -440,41 +498,13 @@
                         validateField(timeField);
                       }
                     }
-                    granularity="minute"
-                    locale={navigator.language}
-                  >
-                    <div class="flex w-full flex-col gap-1.5">
-                      <TimeField.Input
-                        class={cn(
-                          'border-input bg-background selection:bg-primary dark:bg-input/30 selection:text-primary-foreground ring-offset-background placeholder:text-muted-foreground shadow-xs flex h-9 w-full min-w-0 rounded-md border px-3 py-[6px] text-base outline-none transition-[color,box-shadow] disabled:cursor-not-allowed disabled:opacity-50 md:text-sm',
-                          'focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]',
-                          'aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive',
-                        )}
-                      >
-                        {#snippet children({ segments })}
-                          {#each segments as { part, value }}
-                            <div class="inline-block select-none">
-                              {#if part === 'literal'}
-                                <TimeField.Segment
-                                  {part}
-                                  class="text-muted-foreground"
-                                >
-                                  {value}
-                                </TimeField.Segment>
-                              {:else}
-                                <TimeField.Segment
-                                  {part}
-                                  class="rounded-md px-1 hover:bg-muted focus:bg-muted focus:text-foreground focus-visible:ring-0! focus-visible:ring-offset-0! aria-[valuetext=Empty]:text-muted-foreground"
-                                >
-                                  {value}
-                                </TimeField.Segment>
-                              {/if}
-                            </div>
-                          {/each}
-                        {/snippet}
-                      </TimeField.Input>
-                    </div>
-                  </TimeField.Root>
+                    locale={editLocale}
+                    class={cn(
+                      'border-input bg-background selection:bg-primary dark:bg-input/30 selection:text-primary-foreground ring-offset-background placeholder:text-muted-foreground shadow-xs flex h-9 w-full min-w-0 rounded-md border px-3 py-[6px] text-base outline-none transition-[color,box-shadow] disabled:cursor-not-allowed disabled:opacity-50 md:text-sm',
+                      'focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]',
+                      'aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive',
+                    )}
+                  />
                 </div>
               </div>
             </Popover.Content>

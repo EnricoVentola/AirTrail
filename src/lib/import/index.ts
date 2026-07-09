@@ -8,8 +8,10 @@ import { processAITAFile } from '$lib/import/aita';
 import { processByAirFile } from '$lib/import/byair';
 import { processFlightyFile } from '$lib/import/flighty';
 import { processFR24File } from '$lib/import/fr24';
+import { processJetLoversFile } from '$lib/import/jetlovers';
 import { processJetLogFile } from '$lib/import/jetlog';
 import { processLegacyAirTrailFile } from '$lib/import/legacy-airtrail';
+import { processOpenFlightsFile } from '$lib/import/openflights';
 import { processTripItFile } from '$lib/import/tripit';
 import { readFile } from '$lib/utils';
 
@@ -26,6 +28,7 @@ type ProcessResult = {
     displayName: string;
     mappedUserId: string | null;
   }[];
+  skippedRows?: number;
 };
 
 type Processor = (
@@ -34,7 +37,7 @@ type Processor = (
 ) => Promise<ProcessResult>;
 
 const withDefaultUnknownUsers = async (
-  fn: () => Promise<Omit<ProcessResult, 'unknownUsers'>>,
+  fn: () => Promise<Omit<ProcessResult, 'unknownUsers' | 'exportedUsers'>>,
 ): Promise<ProcessResult> => {
   const res = await fn();
   return {
@@ -60,6 +63,10 @@ const processors: Record<PlatformValue, Processor> = {
     withDefaultUnknownUsers(() => processFlightyFile(content, options)),
   byair: async (content, options) =>
     withDefaultUnknownUsers(() => processByAirFile(content, options)),
+  jetlovers: async (content, options) =>
+    withDefaultUnknownUsers(() => processJetLoversFile(content, options)),
+  openflights: async (content, options) =>
+    withDefaultUnknownUsers(() => processOpenFlightsFile(content, options)),
 };
 
 export const processFile = async (

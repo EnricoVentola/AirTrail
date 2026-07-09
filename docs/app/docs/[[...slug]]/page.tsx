@@ -11,7 +11,7 @@ import {
 } from "fumadocs-ui/page";
 import { notFound } from "next/navigation";
 
-import { openapi, source } from "@/lib/source";
+import { openapi, source, type DocsPageData } from "@/lib/source";
 
 const installFooter = {
   items: {
@@ -47,9 +47,10 @@ export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
     return notFound();
   }
 
+  const data = page.data as DocsPageData;
   const path = page.path;
   const fullPath = `docs/content/docs/${path}`;
-  const { body: Mdx, lastModified } = page.data;
+  const { body: Mdx, lastModified } = data;
 
   const footerOverride = customFooters?.[path] ?? undefined;
 
@@ -62,16 +63,16 @@ export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
         path: fullPath,
       }}
       footer={footerOverride}
-      full={page.data.full}
+      full={data.full}
       lastUpdate={lastModified}
       tableOfContent={{
         style: "clerk",
         single: false,
       }}
-      toc={page.data.toc}
+      toc={data.toc}
     >
-      <DocsTitle>{page.data.title}</DocsTitle>
-      <DocsDescription>{page.data.description}</DocsDescription>
+      <DocsTitle>{data.title}</DocsTitle>
+      <DocsDescription>{data.description}</DocsDescription>
       <DocsBody>
         <Mdx
           components={{

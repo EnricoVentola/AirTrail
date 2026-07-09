@@ -12,11 +12,12 @@ import { format } from 'date-fns';
 import { validateAndSaveFlight } from '$lib/server/utils/flight';
 import { aircraftSchema } from '$lib/zod/aircraft';
 import { airlineSchema } from '$lib/zod/airline';
-import { flightSchema } from '$lib/zod/flight';
+import { flightSchema, validateFlightDepartureDate } from '$lib/zod/flight';
 
 
 const defaultFlight = {
   // from, to and departure are required
+  datePrecision: 'day',
   arrival: null,
   arrivalScheduled: null,
   departureTime: null,
@@ -64,7 +65,8 @@ const saveApiFlightSchema = flightSchema
     z.object({
       airline: airlineSchema.shape.icao,
     }),
-  );
+  )
+  .superRefine(validateFlightDepartureDate);
 
 const dateTimeSchema = z.string().datetime({ offset: true });
 
@@ -250,7 +252,9 @@ const opts = body.departure
     }
   }
 
-  const result = await validateAndSaveFlight(user, data);
+  const result = await validateAndSaveFlight(user, data, {
+    bypassSeatCheck: user.role !== 'user',
+  });
   if (!result.success) {
     // @ts-expect-error - this should be valid
     return apiError(result.message, result.status || 500);

@@ -10,6 +10,7 @@
     FlightCustomFieldsModal,
     FlightForm,
     FlightTerminalGateModal,
+    FlightTrackModal,
   } from '$lib/components/modals/flight-form';
   import { Button } from '$lib/components/ui/button';
   import * as Form from '$lib/components/ui/form';
@@ -22,7 +23,7 @@
   import { api, trpc } from '$lib/trpc';
   import { type FlightData } from '$lib/utils';
   import { decomposeToLocal, isUsingAmPm } from '$lib/utils/datetime';
-  import { flightSchema } from '$lib/zod/flight';
+  import { flightFormSchema } from '$lib/zod/flight';
 
   let {
     flight,
@@ -36,9 +37,12 @@
     showTrigger?: boolean;
   } = $props();
 
-  // If their language uses 12-hour time format, we display the time in *a* 12-hour format
-  // (not necessarily the user's locale, because our time validator doesn't support all languages).
-  const displayLocale = isUsingAmPm() ? 'en-US' : 'fr-FR';
+  // If preferences resolve to 12-hour time, we display the time in *a* 12-hour
+  // format (not necessarily the user's locale, because our time validator
+  // doesn't support all languages). 'auto' falls back to system-locale detection.
+  const displayLocale = isUsingAmPm(page.data.user?.timeFormat)
+    ? 'en-US'
+    : 'fr-FR';
 
   const customFieldDefinitions = trpc.customField.listDefinitions.query({
     entityType: 'flight',
@@ -76,6 +80,22 @@
           values.map((v) => [v.fieldId, v.value]),
         );
         savedFieldIds = new Set(values.map((v) => v.fieldId));
+        const track = await api.flightTrack.get.query(flight.id);
+        formData.update((current) => ({
+          ...current,
+          track: track
+            ? {
+                coordinates: track.coordinates,
+                ...(track.times ? { times: track.times } : {}),
+                ...(track.groundSpeedKt
+                  ? { groundSpeedKt: track.groundSpeedKt }
+                  : {}),
+                ...(track.trackDeg ? { trackDeg: track.trackDeg } : {}),
+                sourceFormat: track.sourceFormat,
+                sourceName: track.sourceName,
+              }
+            : undefined,
+        }));
       } catch (e) {
         console.error(e);
       }
@@ -84,9 +104,19 @@
 
   const fromTz = flight.from?.tz ?? 'UTC';
   const toTz = flight.to?.tz ?? 'UTC';
+  const isPartialDate = flight.raw.datePrecision !== 'day';
+  const toFormDateAnchor = (value: string | null) => {
+    return value
+      ? new Date(`${value.slice(0, 10)}T00:00:00.000Z`).toISOString()
+      : null;
+  };
 
-  const dep = decomposeToLocal(flight.raw.departure, fromTz, displayLocale);
-  const arr = decomposeToLocal(flight.raw.arrival, toTz, displayLocale);
+  const dep = isPartialDate
+    ? { date: null, time: null }
+    : decomposeToLocal(flight.raw.departure, fromTz, displayLocale);
+  const arr = isPartialDate
+    ? { date: null, time: null }
+    : decomposeToLocal(flight.raw.arrival, toTz, displayLocale);
   const depSched = decomposeToLocal(
     flight.raw.departureScheduled,
     fromTz,
@@ -123,12 +153,10 @@
       typeof flight.raw,
       'id' | 'userId' | 'date' | 'duration'
     >),
-    departure:
-      dep.date ??
-      (flight.raw.date
-        ? new Date(flight.raw.date + 'T00:00:00Z').toISOString()
-        : null),
-    arrival: arr.date,
+    departure: isPartialDate
+      ? toFormDateAnchor(flight.raw.date)
+      : (dep.date ?? toFormDateAnchor(flight.raw.date)),
+    arrival: isPartialDate ? null : arr.date,
     departureScheduled: depSched.date,
     arrivalScheduled: arrSched.date,
     takeoffScheduled: takeoffSched.date,
@@ -146,11 +174,14 @@
   };
 
   const form = superForm(
-    defaults<Infer<typeof flightSchema>>(schemaFlight, zod(flightSchema)),
+    defaults<Infer<typeof flightFormSchema>>(
+      schemaFlight,
+      zod(flightFormSchema),
+    ),
     {
       dataType: 'json',
       id: Math.random().toString(36).substring(7),
-      validators: zod(flightSchema),
+      validators: zod(flightFormSchema),
       onSubmit({ cancel }) {
         $formData.id = flight.id;
         $formData.customFields = toCustomFieldsPayload();
@@ -162,6 +193,7 @@
         if (form.message) {
           if (form.message.type === 'success') {
             trpc.flight.list.utils.invalidate();
+            trpc.flightTrack.list.utils.invalidate();
             toast.success(form.message.text);
             open = false;
             return;
@@ -180,6 +212,7 @@
     size="icon"
     onclick={() => (open = true)}
     disabled={triggerDisabled}
+    data-testid="edit-flight-button"
   >
     <SquarePen size={16} />
   </Button>
@@ -197,6 +230,7 @@
       <div class="flex w-full items-center justify-between">
         <div class="flex items-center gap-2">
           <FlightTerminalGateModal {form} />
+          <FlightTrackModal {form} />
           <FlightCustomFieldsModal
             bind:this={customFieldsModal}
             definitions={$customFieldDefinitions.data ?? []}

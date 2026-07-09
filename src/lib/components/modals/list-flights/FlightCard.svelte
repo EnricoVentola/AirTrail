@@ -1,9 +1,10 @@
 <script lang="ts">
   import type { TZDate } from '@date-fns/tz';
 
-  import AirlineIcon from '$lib/components/display/AirlineIcon.svelte';
-  import type { Airline, Airport } from '$lib/db/types';
-  import { formatAsDate } from '$lib/utils/datetime';
+  import { AirlineIcon, RouteArrow } from '$lib/components/display';
+  import { Badge } from '$lib/components/ui/badge';
+  import type { Airline, Airport, FlightDatePrecision } from '$lib/db/types';
+  import { formatAsFlightDate } from '$lib/utils/datetime';
 
   type Flight = {
     from: Airport | null;
@@ -11,6 +12,8 @@
     airline: Airline | null;
     flightNumber?: string | null;
     date?: TZDate | null;
+    datePrecision?: FlightDatePrecision;
+    passengers?: string[];
   };
 
   let {
@@ -23,7 +26,12 @@
 
   const formatDate = (flight: Flight) => {
     if (!flight.date) return null;
-    return formatAsDate(flight.date, false, true);
+    return formatAsFlightDate(
+      flight.date,
+      flight.datePrecision ?? 'day',
+      false,
+      true,
+    );
   };
 
   const getFlightNumber = (flight: Flight) => {
@@ -51,15 +59,7 @@
         <span class="text-xl font-extrabold tracking-wide">
           {flight.from?.iata || flight.from?.icao || 'N/A'}
         </span>
-        <div
-          class="fill-foreground size-[22px] flex items-center justify-center shrink-0"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640"
-            ><path
-              d="M320 576C461.4 576 576 461.4 576 320C576 178.6 461.4 64 320 64C178.6 64 64 178.6 64 320C64 461.4 178.6 576 320 576zM361 417C351.6 426.4 336.4 426.4 327.1 417C317.8 407.6 317.7 392.4 327.1 383.1L366.1 344.1L216 344.1C202.7 344.1 192 333.4 192 320.1C192 306.8 202.7 296.1 216 296.1L366.1 296.1L327.1 257.1C317.7 247.7 317.7 232.5 327.1 223.2C336.5 213.9 351.7 213.8 361 223.2L441 303.2C450.4 312.6 450.4 327.8 441 337.1L361 417.1z"
-            /></svg
-          >
-        </div>
+        <RouteArrow class="size-[22px] fill-foreground" />
         <span class="text-xl font-extrabold tracking-wide">
           {flight.to?.iata || flight.to?.icao || 'N/A'}
         </span>
@@ -77,13 +77,15 @@
             {formatDate(flight)}
           </span>
         {/if}
-        {#if getFlightNumber(flight)}
+        {#if flight.passengers?.length}
+          <Badge variant="outline" class="max-w-[120px] truncate self-end">
+            {flight.passengers[0]}{flight.passengers.length > 1
+              ? ` +${flight.passengers.length - 1}`
+              : ''}
+          </Badge>
+        {:else if getFlightNumber(flight)}
           <span class="text-[15px] text-muted-foreground">
             {getFlightNumber(flight)}
-          </span>
-        {:else if flight.airline}
-          <span class="text-sm text-muted-foreground truncate max-w-[120px]">
-            {flight.airline.name}
           </span>
         {/if}
       </div>

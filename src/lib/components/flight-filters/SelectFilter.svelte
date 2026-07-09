@@ -1,5 +1,13 @@
 <script lang="ts">
-  import { Check, Funnel, Plane, PlaneLanding, PlaneTakeoff } from '@o7/icon';
+  import {
+    Check,
+    Funnel,
+    Plane,
+    PlaneLanding,
+    PlaneTakeoff,
+    UsersRound,
+  } from '@o7/icon';
+  import { Calendar } from '@o7/icon/lucide';
   import { Airlines } from '@o7/icon/material';
 
   import { Badge } from '$lib/components/ui/badge';
@@ -18,6 +26,7 @@
     itemIcon,
     disabled,
     options,
+    multiple = true,
   }: {
     filterValues: string[];
     title: string;
@@ -26,6 +35,7 @@
     itemIcon?: Snippet<[string]>;
     disabled: boolean;
     options: { value: string; label: string; shortLabel?: string }[];
+    multiple?: boolean;
   } = $props();
 
   let open = $state(false);
@@ -45,13 +55,18 @@
   }
 
   function handleSelect(currentValue: string) {
-    if (Array.isArray(filterValues) && filterValues.includes(currentValue)) {
-      filterValues = filterValues.filter((v) => v !== currentValue);
+    if (multiple) {
+      if (Array.isArray(filterValues) && filterValues.includes(currentValue)) {
+        filterValues = filterValues.filter((v) => v !== currentValue);
+      } else {
+        filterValues = [
+          ...(Array.isArray(filterValues) ? filterValues : []),
+          currentValue,
+        ];
+      }
     } else {
-      filterValues = [
-        ...(Array.isArray(filterValues) ? filterValues : []),
-        currentValue,
-      ];
+      filterValues = [currentValue];
+      open = false;
     }
   }
 </script>
@@ -96,6 +111,10 @@
           <PlaneLanding size={16} class="mr-2" />
         {:else if triggerIcon == 'airline'}
           <Airlines size={20} class="mr-2" />
+        {:else if triggerIcon == 'calendar'}
+          <Calendar size={16} class="mr-2" />
+        {:else if triggerIcon == 'user'}
+          <UsersRound size={16} class="mr-2" />
         {:else}
           <Funnel size={16} class="mr-2" />
         {/if}
@@ -128,7 +147,23 @@
   </Popover.Trigger>
   <Popover.Content class="max-w-[400px] p-0" align="start" side="bottom">
     <Command.Root>
-      <Command.Input {placeholder} />
+      <div class="flex items-center border-b">
+        <div class="flex-1 [&_[data-command-input-wrapper]]:border-b-0">
+          <Command.Input {placeholder} />
+        </div>
+        {#if filterValues.length > 0}
+          <Button
+            variant="secondary"
+            size="sm"
+            class="mr-2 h-6 px-2 text-xs"
+            onclick={() => {
+              filterValues = [];
+            }}
+          >
+            Clear
+          </Button>
+        {/if}
+      </div>
       <Command.List>
         <Command.Viewport>
           <Command.Empty>No results found.</Command.Empty>
@@ -150,18 +185,6 @@
               </Command.Item>
             {/each}
           </Command.Group>
-          {#if filterValues.length > 0}
-            <Command.Separator />
-            <Command.Item
-              class="justify-center text-center"
-              value="clear"
-              onSelect={() => {
-                filterValues = [];
-              }}
-            >
-              Clear filters
-            </Command.Item>
-          {/if}
         </Command.Viewport>
       </Command.List>
     </Command.Root>

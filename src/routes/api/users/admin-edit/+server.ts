@@ -45,7 +45,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
   const form = await superValidate(request, zod(adminEditUserSchema));
   if (!form.valid) return actionResult('failure', { form });
 
-  const { id: userId, username, displayName, unit, role } = form.data;
+  const { id: userId, username, displayName, role } = form.data;
 
   const targetUser = await db
     .selectFrom('user')
@@ -67,7 +67,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
   }
 
   const updatedFields = getChangedFields(
-    { username, displayName, unit, role },
+    { username, displayName, role },
     targetUser,
   );
 
@@ -77,7 +77,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
   }
 
   if (updatedFields.username) {
-    const exists = await usernameExists(updatedFields.username);
+    const exists = await usernameExists(updatedFields.username, userId);
     if (exists) {
       setError(form, 'username', 'Username already exists');
       return actionResult('failure', { form });

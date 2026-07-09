@@ -22,8 +22,26 @@ paths:
       tags:
         - 'Flight'
       summary: 'List flights'
-      description: 'List all your flights.'
+      description: "List flights visible to the authenticated API key. Regular users can only list their own flights. Admins and owners can also request a specific user's flights or all flights."
       operationId: 'list-flights'
+      parameters:
+        - name: scope
+          in: query
+          required: false
+          description: 'Which flights to return. `mine` is the default. `user` and `all` require an admin or owner API key.'
+          schema:
+            type: string
+            enum:
+              - 'mine'
+              - 'user'
+              - 'all'
+            default: 'mine'
+        - name: userId
+          in: query
+          required: false
+          description: 'The user ID whose flights should be returned when `scope=user`.'
+          schema:
+            type: string
       responses:
         '200':
           description: 'A list of flights'
@@ -36,8 +54,95 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/Flight'
+        '400':
+          description: 'Invalid query parameters'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: false
+                  message:
+                    type: string
+                    example: 'Invalid scope'
         '401':
           '$ref': '#/components/responses/401'
+        '403':
+          '$ref': '#/components/responses/403'
+        '500':
+          '$ref': '#/components/responses/500'
+      security:
+        - bearerAuth: []
+  /flight/export:
+    get:
+      tags:
+        - 'Flight'
+      summary: 'Export flights'
+      description: "Export an AirTrail backup visible to the authenticated API key. The JSON response matches the AirTrail import format. Regular users can only export their own flights. Admins and owners can also request a specific user's flights or all flights."
+      operationId: 'export-flights'
+      parameters:
+        - name: format
+          in: query
+          required: false
+          description: 'The backup format to return.'
+          schema:
+            type: string
+            enum:
+              - 'json'
+              - 'yaml'
+              - 'yml'
+            default: 'json'
+        - name: scope
+          in: query
+          required: false
+          description: 'Which flights to export. `mine` is the default. `user` and `all` require an admin or owner API key.'
+          schema:
+            type: string
+            enum:
+              - 'mine'
+              - 'user'
+              - 'all'
+            default: 'mine'
+        - name: userId
+          in: query
+          required: false
+          description: 'The user ID whose flights should be exported when `scope=user`.'
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 'An AirTrail backup export'
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              description: 'Attachment filename for the exported backup.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackupExport'
+            application/yaml:
+              schema:
+                type: string
+        '400':
+          description: 'Invalid query parameters'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: false
+                  message:
+                    type: string
+                    example: 'Invalid format'
+        '401':
+          '$ref': '#/components/responses/401'
+        '403':
+          '$ref': '#/components/responses/403'
         '500':
           '$ref': '#/components/responses/500'
       security:
@@ -197,6 +302,66 @@ paths:
       security:
         - bearerAuth: []
 
+  /stats:
+    get:
+      tags:
+        - 'Stats'
+      summary: 'Get statistics'
+      description: "Get aggregated statistics for completed flights visible to the authenticated API key. Regular users can only retrieve their own statistics. Admins and owners can also request a specific user's statistics or statistics for all users."
+      operationId: 'get-stats'
+      parameters:
+        - name: scope
+          in: query
+          required: false
+          description: 'Which flights to aggregate. `mine` is the default. `user` and `all` require an admin or owner API key.'
+          schema:
+            type: string
+            enum:
+              - 'mine'
+              - 'user'
+              - 'all'
+            default: 'mine'
+        - name: userId
+          in: query
+          required: false
+          description: 'The user ID whose statistics should be returned when `scope=user`.'
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 'Aggregated statistics'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  stats:
+                    $ref: '#/components/schemas/Stats'
+        '400':
+          description: 'Invalid query parameters'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: false
+                  message:
+                    type: string
+                    example: 'Invalid scope'
+        '401':
+          '$ref': '#/components/responses/401'
+        '403':
+          '$ref': '#/components/responses/403'
+        '500':
+          '$ref': '#/components/responses/500'
+      security:
+        - bearerAuth: []
+
 components:
   securitySchemes:
     bearerAuth:
@@ -211,6 +376,26 @@ components:
         success:
           type: boolean
           example: true
+    BackupExport:
+      type: object
+      description: 'AirTrail backup export. The JSON representation can be imported using the AirTrail importer.'
+      properties:
+        users:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              displayName:
+                type: string
+              username:
+                type: string
+        flights:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
     CustomFieldsInput:
       type: object
       description: 'Custom field values keyed by custom field key. Values must match the configured field type.'
@@ -322,15 +507,25 @@ components:
           description: 'The arrival airport.'
           $ref: '#/components/schemas/Airport'
         departure:
-          type: string
-          description: 'The departure time in UTC, in ISO 8601 format.'
-          format: date
+          type: [string, 'null']
+          description: 'The stored departure instant in UTC when known. For partial dates, this stores the canonical date anchor at UTC midnight and must be interpreted with `datePrecision`.'
           example: '2021-09-01T23:00:00.000+00:00'
         arrival:
           type: [string, 'null']
-          description: 'The arrival time in UTC, in ISO 8601 format.'
-          format: date
+          description: 'The stored arrival instant in UTC when known. Partial-date flights do not store a separate arrival anchor, so this is null unless `datePrecision` is `day`.'
           example: '2021-09-02T10:00:00.000+00:00'
+        date:
+          type: string
+          description: 'Canonical flight date anchor. Exact dates use YYYY-MM-DD, month-only dates use the first day of the month, and year-only dates use January 1st of that year.'
+          example: '2021-09-02'
+        datePrecision:
+          type: string
+          description: 'How precise the canonical `date` value is.'
+          enum:
+            - 'day'
+            - 'month'
+            - 'year'
+          example: 'day'
         seats:
           type: array
           minItems: 1
@@ -423,17 +618,23 @@ components:
           example: 'EGLL'
         departure:
           type: string
-          description: 'The departure date, in ISO 8601 format.'
-          format: date
+          description: 'The departure date anchor. Accepts either a date-only string (`YYYY-MM-DD`) or a full ISO 8601 datetime. For partial dates, send January 1st for year-only flights and the first day of the month for month-only flights.'
           example: '2022-01-01'
+        datePrecision:
+          type: string
+          description: 'How precise the canonical flight date anchor is. Partial dates apply only to the departure-side anchor.'
+          enum:
+            - 'day'
+            - 'month'
+            - 'year'
+          default: 'day'
         departureTime:
           type: string
           description: 'The departure time in local airport time. 24- and 12-hour formats are supported.'
           example: '11:30'
         arrival:
-          type: string
-          description: 'The arrival date, in ISO 8601 format.'
-          format: date
+          type: [string, 'null']
+          description: 'The arrival date or datetime. Partial-date flights do not support a separate arrival anchor, so omit this or send null unless `datePrecision` is `day`.'
           example: '2022-01-01'
         arrivalTime:
           type: string
@@ -534,17 +735,23 @@ components:
           example: 'EGLL'
         departure:
           type: string
-          description: 'The departure date, in ISO 8601 format.'
-          format: date
+          description: 'The departure date anchor. Accepts either a date-only string (`YYYY-MM-DD`) or a full ISO 8601 datetime. For partial dates, send January 1st for year-only flights and the first day of the month for month-only flights.'
           example: '2022-01-01'
+        datePrecision:
+          type: string
+          description: 'How precise the canonical flight date anchor is. Partial dates apply only to the departure-side anchor.'
+          enum:
+            - 'day'
+            - 'month'
+            - 'year'
+          default: 'day'
         departureTime:
           type: string
           description: 'The departure time in local airport time. 24- and 12-hour formats are supported.'
           example: '11:30'
         arrival:
-          type: string
-          description: 'The arrival date, in ISO 8601 format.'
-          format: date
+          type: [string, 'null']
+          description: 'The arrival date or datetime. Partial-date flights do not support a separate arrival anchor, so omit this or send null unless `datePrecision` is `day`.'
           example: '2022-01-01'
         arrivalTime:
           type: string
@@ -619,6 +826,189 @@ components:
           example: 'This is a test flight.'
         customFields:
           '$ref': '#/components/schemas/CustomFieldsInput'
+    Stats:
+      type: object
+      required:
+        - flights
+        - distanceKm
+        - durationSeconds
+        - airports
+        - topAirline
+        - topAirport
+        - topAircraft
+        - topRoute
+      properties:
+        flights:
+          type: integer
+          description: 'Total number of completed flights.'
+          example: 42
+        distanceKm:
+          type: integer
+          description: 'Total great-circle distance flown by completed flights in kilometres, rounded to the nearest km.'
+          example: 87432
+        durationSeconds:
+          type: integer
+          description: 'Total time spent flying on completed flights in seconds.'
+          example: 561600
+        airports:
+          type: integer
+          description: 'Total number of unique airports visited by completed flights (origins and destinations combined).'
+          example: 31
+        topAirline:
+          nullable: true
+          description: 'The most frequently flown airline, or null if no flights have an airline set.'
+          allOf:
+            - $ref: '#/components/schemas/TopAirline'
+        topAirport:
+          nullable: true
+          description: 'The most frequently visited airport (as origin or destination), or null if no airports are recorded.'
+          allOf:
+            - $ref: '#/components/schemas/TopAirport'
+        topAircraft:
+          nullable: true
+          description: 'The most frequently flown aircraft model, or null if no flights have an aircraft model set.'
+          allOf:
+            - $ref: '#/components/schemas/TopAircraft'
+        topRoute:
+          nullable: true
+          description: 'The most frequently flown origin-destination pair, or null if no routes are recorded.'
+          allOf:
+            - $ref: '#/components/schemas/TopRoute'
+    TopAirline:
+      type: object
+      required:
+        - id
+        - name
+        - iata
+        - icao
+        - count
+      properties:
+        id:
+          type: integer
+          description: 'The unique ID of the airline in the AirTrail database.'
+          example: 1
+        name:
+          type: string
+          description: 'The name of the airline.'
+          example: 'British Airways'
+        iata:
+          type: [string, 'null']
+          description: 'The IATA code of the airline.'
+          example: 'BA'
+        icao:
+          type: [string, 'null']
+          description: 'The ICAO code of the airline.'
+          example: 'BAW'
+        count:
+          type: integer
+          description: 'Number of flights with this airline.'
+          example: 10
+    TopAirport:
+      type: object
+      required:
+        - id
+        - name
+        - icao
+        - iata
+        - count
+      properties:
+        id:
+          type: integer
+          description: 'The unique ID of the airport in the AirTrail database.'
+          example: 42
+        name:
+          type: string
+          description: 'The name of the airport.'
+          example: 'John F Kennedy International Airport'
+        icao:
+          type: string
+          description: 'The ICAO code of the airport.'
+          example: 'KJFK'
+        iata:
+          type: [string, 'null']
+          description: 'The IATA code of the airport.'
+          example: 'JFK'
+        count:
+          type: integer
+          description: 'Number of flights where this airport appears as origin or destination.'
+          example: 20
+    TopAircraft:
+      type: object
+      required:
+        - id
+        - name
+        - icao
+        - count
+      properties:
+        id:
+          type: integer
+          description: 'The unique ID of the aircraft model in the AirTrail database.'
+          example: 5
+        name:
+          type: string
+          description: 'The name of the aircraft model.'
+          example: 'Airbus A380-800'
+        icao:
+          type: [string, 'null']
+          description: 'The ICAO aircraft type code.'
+          example: 'A388'
+        count:
+          type: integer
+          description: 'Number of flights flown on this aircraft model.'
+          example: 8
+    TopRoute:
+      type: object
+      required:
+        - from
+        - to
+        - count
+      properties:
+        from:
+          type: object
+          description: 'The origin airport.'
+          required:
+            - id
+            - name
+            - icao
+            - iata
+          properties:
+            id:
+              type: integer
+              example: 42
+            name:
+              type: string
+              example: 'John F Kennedy International Airport'
+            icao:
+              type: string
+              example: 'KJFK'
+            iata:
+              type: [string, 'null']
+              example: 'JFK'
+        to:
+          type: object
+          description: 'The destination airport.'
+          required:
+            - id
+            - name
+            - icao
+            - iata
+          properties:
+            id:
+              type: integer
+              example: 15
+            name:
+              type: string
+              example: 'Los Angeles International Airport'
+            icao:
+              type: string
+              example: 'KLAX'
+            iata:
+              type: [string, 'null']
+              example: 'LAX'
+        count:
+          type: integer
+          description: 'Number of times this route has been flown.'
+          example: 5
   responses:
     200:
       description: 'Success'
@@ -673,3 +1063,5 @@ components:
 tags:
   - name: 'Flight'
     description: 'Operations related to flights'
+  - name: 'Stats'
+    description: 'Operations related to statistics'

@@ -7,10 +7,15 @@ import type {
   Airport,
   Aircraft,
   Airline,
+  FlightDatePrecision,
   Seat,
   PublicShare,
 } from '$lib/db/types';
 import { generateRandomString } from '$lib/server/utils/random';
+import {
+  flightTrackPayloadSchema,
+  type FlightTrackInput,
+} from '$lib/track/schema';
 import type { ErrorActionResult } from '$lib/utils/forms';
 import { baseShareSchema, type shareSchema } from '$lib/zod/share';
 
@@ -36,6 +41,8 @@ interface SanitizedFlight {
   landingScheduled?: string | null;
   landingActual?: string | null;
   date?: string | null;
+  datePrecision?: FlightDatePrecision;
+  track?: FlightTrackInput;
 }
 
 // Zod schemas for input validation
@@ -59,6 +66,7 @@ export const shareUpdateSchema = z.object({
   showAirlines: z.boolean().optional(),
   showAircraft: z.boolean().optional(),
   showTimes: z.boolean().optional(),
+  showTracks: z.boolean().optional(),
   showDates: z.boolean().optional(),
   showSeat: z.boolean().optional(),
 });
@@ -100,6 +108,7 @@ export async function listUserShares(userId: string) {
  */
 export async function createShare(userId: string, input: ShareCreateInput) {
   const slug = input.slug || generateRandomString(12);
+  const showTracks = input.showMap && input.showTracks;
 
   // Check if slug already exists
   const existing = await db
@@ -130,6 +139,7 @@ export async function createShare(userId: string, input: ShareCreateInput) {
       showAirlines: input.showAirlines,
       showAircraft: input.showAircraft,
       showTimes: input.showTimes,
+      showTracks,
       showDates: input.showDates,
       showSeat: input.showSeat,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -143,6 +153,19 @@ export async function createShare(userId: string, input: ShareCreateInput) {
  */
 export async function updateShare(userId: string, input: ShareUpdateInput) {
   const { id, ...updates } = input;
+
+  const currentShare = await db
+    .selectFrom('publicShare')
+    .select('showMap')
+    .where('id', '=', id)
+    .where('userId', '=', userId)
+    .executeTakeFirstOrThrow();
+
+  const effectiveShowMap = updates.showMap ?? currentShare.showMap;
+  const normalizedUpdates = {
+    ...updates,
+    ...(!effectiveShowMap ? { showTracks: false } : {}),
+  };
 
   // Check if slug already exists (if being updated)
   if (updates.slug) {
@@ -163,7 +186,7 @@ export async function updateShare(userId: string, input: ShareUpdateInput) {
 
   return await db
     .updateTable('publicShare')
-    .set(updates)
+    .set(normalizedUpdates)
     .where('id', '=', id)
     .where('userId', '=', userId)
     .returningAll()
@@ -208,14 +231,48 @@ export async function getPublicShareData(slug: string) {
 
   // Sanitize flight data based on privacy settings
   const sanitizedFlights = sanitizeFlightData(flights, share);
+  const flightIds = sanitizedFlights.map((flight) => flight.id);
+  const showTracks = share.showMap && share.showTracks;
+  const trackRows =
+    showTracks && flightIds.length > 0
+      ? await db
+          .selectFrom('flightTrack')
+          .select(['flightId', 'track', 'sourceFormat', 'sourceName'])
+          .where('flightId', 'in', flightIds)
+          .execute()
+      : [];
+  const tracksByFlight = new Map<number, FlightTrackInput>(
+    trackRows.map((row) => {
+      const track = flightTrackPayloadSchema.parse(row.track);
+      return [
+        row.flightId,
+        {
+          coordinates: track.coordinates,
+          ...(share.showTimes && track.times ? { times: track.times } : {}),
+          ...(track.groundSpeedKt
+            ? { groundSpeedKt: track.groundSpeedKt }
+            : {}),
+          ...(track.trackDeg ? { trackDeg: track.trackDeg } : {}),
+          sourceFormat: row.sourceFormat,
+          sourceName: row.sourceName,
+        },
+      ];
+    }),
+  );
 
   return {
     settings: {
       showMap: share.showMap,
       showStats: share.showStats,
       showFlightList: share.showFlightList,
+      showTracks,
     },
-    flights: sanitizedFlights,
+    flights: sanitizedFlights.map((flight) => ({
+      ...flight,
+      ...(tracksByFlight.has(flight.id)
+        ? { track: tracksByFlight.get(flight.id) }
+        : {}),
+    })),
   };
 }
 
@@ -241,7 +298,7 @@ async function getFilteredFlightsForShare(share: PublicShare) {
  * Sanitize flight data based on privacy settings
  * Sends complete objects to frontend instead of individual field properties
  */
-function sanitizeFlightData(
+export function sanitizeFlightData(
   flights: Awaited<ReturnType<typeof getFilteredFlightsForShare>>,
   share: PublicShare,
 ): SanitizedFlight[] {
@@ -263,7 +320,7 @@ function sanitizeFlightData(
       to: flight.to!, // Always include complete to airport
       duration: flight.duration,
       flightReason: flight.flightReason,
-      aircraftReg: flight.aircraftReg,
+      aircraftReg: share.showAircraft ? flight.aircraftReg : null,
       seats: userSeats,
     };
 
@@ -293,6 +350,7 @@ function sanitizeFlightData(
 
     if (share.showDates) {
       sanitized.date = flight.date;
+      sanitized.datePrecision = flight.datePrecision;
     }
 
     return sanitized;
@@ -371,6 +429,7 @@ export async function validateAndSaveShare(
           showAirlines: shareData.showAirlines,
           showAircraft: shareData.showAircraft,
           showTimes: shareData.showTimes,
+          showTracks: shareData.showMap && shareData.showTracks,
           showDates: shareData.showDates,
           showSeat: shareData.showSeat,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -424,6 +483,7 @@ export async function validateAndSaveShare(
           showAirlines: shareData.showAirlines,
           showAircraft: shareData.showAircraft,
           showTimes: shareData.showTimes,
+          showTracks: shareData.showMap && shareData.showTracks,
           showDates: shareData.showDates,
           showSeat: shareData.showSeat,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -2,13 +2,18 @@
   import NumberFlow from '@number-flow/svelte';
 
   import { page } from '$app/state';
-  import { kmToMiles, pluralize } from '$lib/utils';
-  import { formatAsDate } from '$lib/utils/datetime';
+  import { pluralize } from '$lib/utils';
+  import { formatAsFlightDate } from '$lib/utils/datetime';
+  import {
+    convertDistance,
+    distanceUnitLabel,
+    getPreferences,
+  } from '$lib/utils/preferences';
 
-  const metric = $derived(page.data.user?.unit === 'metric');
+  const prefs = $derived(getPreferences(page.data.user));
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let { data }: { data: any } = $props();
+  let { data, clickable }: { data: any; clickable: boolean } = $props();
 </script>
 
 <div class="flex flex-col px-3 pt-3">
@@ -33,10 +38,10 @@
 <div class="h-px bg-muted my-3" />
 <div class="grid grid-cols-[repeat(3,1fr)] px-3">
   <h4 class="font-semibold">
-    <NumberFlow
-      value={Math.round(metric ? data.distance : kmToMiles(data.distance))}
-    />
-    <span class="font-thin text-muted-foreground">{metric ? 'km' : 'mi'}</span>
+    <NumberFlow value={Math.round(convertDistance(data.distance, prefs))} />
+    <span class="font-thin text-muted-foreground">
+      {distanceUnitLabel(prefs)}
+    </span>
   </h4>
   <h4 class="font-semibold">
     <NumberFlow value={data.flights.length} />
@@ -64,7 +69,14 @@
     <div class="grid grid-cols-[repeat(3,1fr)]">
       <h4 class="font-thin">{flight.route}</h4>
       <h4 class="font-thin">
-        {flight.date ? formatAsDate(flight.date, true, true) : ''}
+        {flight.date
+          ? formatAsFlightDate(
+              flight.date,
+              flight.datePrecision ?? 'day',
+              true,
+              true,
+            )
+          : ''}
       </h4>
       <h4 class="font-thin">{flight.airline.name}</h4>
     </div>
@@ -75,7 +87,9 @@
     </h4>
   {/if}
 </div>
-<div class="h-px bg-muted my-2" />
-<div class="px-3 pb-2">
-  <p class="text-xs text-muted-foreground text-center">Click to view all</p>
-</div>
+{#if clickable}
+  <div class="h-px bg-muted my-2" />
+  <div class="px-3 pb-2">
+    <p class="text-xs text-muted-foreground text-center">Click for details</p>
+  </div>
+{/if}

@@ -7,6 +7,7 @@
   import FlightTimetable from './FlightTimetable.svelte';
   import SeatInformation from './SeatInformation.svelte';
 
+  import { confirmation } from '$lib/components/helpers/confirm';
   import { AirportField, DateTimeField } from '$lib/components/form-fields';
   import { mergeTimeWithDate } from '$lib/utils/datetime';
   import type { FlightFormData } from '$lib/zod/flight';
@@ -17,7 +18,7 @@
     form: SuperForm<FlightFormData>;
   } = $props();
 
-  const { form: formData } = form;
+  const { form: formData, errors } = form;
   type TimetableTab = 'scheduled' | 'actual';
 
   const MAX_DURATION_SECONDS = 24 * 60 * 60;
@@ -40,6 +41,36 @@
     'landingActualTime',
   ] as const;
 
+  const scheduledTimetableFields = [
+    'departureScheduled',
+    'departureScheduledTime',
+    'arrivalScheduled',
+    'arrivalScheduledTime',
+    'takeoffScheduled',
+    'takeoffScheduledTime',
+    'landingScheduled',
+    'landingScheduledTime',
+  ] as const;
+
+  const actualTimetableFields = [
+    'departure',
+    'departureTime',
+    'arrival',
+    'arrivalTime',
+    'takeoffActual',
+    'takeoffActualTime',
+    'landingActual',
+    'landingActualTime',
+  ] as const;
+
+  const clearedByPartialDateFields = [
+    'arrival',
+    'departureTime',
+    'arrivalTime',
+    ...timetableDateFields,
+    ...timetableTimeFields,
+  ] as const;
+
   const hasTimetableData = $derived.by(() => {
     return (
       timetableDateFields.some((field) => !!$formData[field]) ||
@@ -47,15 +78,128 @@
     );
   });
 
+  const hasClearableDateTimeData = $derived.by(() => {
+    return clearedByPartialDateFields.some((field) => !!$formData[field]);
+  });
+
   let showTimetable = $state(false);
+  let partialDateMode = $state($formData.datePrecision !== 'day');
   let prevHasTimetableData = $state(false);
   let preferredMobileTab = $state<TimetableTab>('actual');
   let preferredMobileTabVersion = $state(0);
+  let revealedTimetableError = $state('');
+
+  const hasError = (field: keyof FlightFormData) => !!$errors[field];
+
+  const timetableErrorTab = $derived.by<TimetableTab | null>(() => {
+    if ($formData.datePrecision !== 'day') return null;
+
+    const hasScheduledErrors = scheduledTimetableFields.some(hasError);
+    if (hasScheduledErrors) return 'scheduled';
+
+    const hasActualErrors = actualTimetableFields.some(hasError);
+    if (hasActualErrors && (showTimetable || hasTimetableData)) {
+      return 'actual';
+    }
+
+    return null;
+  });
+
+  const timetableErrorSignature = $derived.by(() => {
+    return [...scheduledTimetableFields, ...actualTimetableFields]
+      .flatMap((field) =>
+        ($errors[field] ?? []).map((message) => `${field}:${message}`),
+      )
+      .join('|');
+  });
+
+  $effect(() => {
+    if (!timetableErrorTab) {
+      revealedTimetableError = '';
+      return;
+    }
+
+    if (timetableErrorSignature === revealedTimetableError) return;
+    revealedTimetableError = timetableErrorSignature;
+    showTimetable = true;
+    partialDateMode = false;
+    preferredMobileTab = timetableErrorTab;
+    preferredMobileTabVersion += 1;
+  });
+
+  const clearDetailedTimetable = () => {
+    formData.update((current) => ({
+      ...current,
+      arrival: null,
+      departureTime: null,
+      arrivalTime: null,
+      departureScheduled: null,
+      departureScheduledTime: null,
+      arrivalScheduled: null,
+      arrivalScheduledTime: null,
+      takeoffScheduled: null,
+      takeoffScheduledTime: null,
+      takeoffActual: null,
+      takeoffActualTime: null,
+      landingScheduled: null,
+      landingScheduledTime: null,
+      landingActual: null,
+      landingActualTime: null,
+    }));
+  };
+
+  const toPartialDepartureAnchor = (departure: string | null) => {
+    if (!departure) return null;
+
+    const [year, month] = departure.slice(0, 10).split('-');
+    if (!year || !month) return null;
+
+    return new Date(Date.UTC(Number(year), Number(month) - 1, 1)).toISOString();
+  };
+
+  const enablePartialDateMode = async () => {
+    if (
+      hasClearableDateTimeData &&
+      !(await confirmation.show({
+        title: 'Switch to partial date?',
+        description:
+          'This will clear the arrival date, current times, and detailed timetable.',
+        confirmText: 'Switch',
+        cancelText: 'Cancel',
+      }))
+    ) {
+      return;
+    }
+
+    partialDateMode = true;
+    showTimetable = false;
+    formData.update((current) => ({
+      ...current,
+      datePrecision: current.departure ? 'month' : 'year',
+      departure: current.departure
+        ? toPartialDepartureAnchor(current.departure)
+        : current.departure,
+    }));
+    clearDetailedTimetable();
+  };
+
+  const disablePartialDateMode = () => {
+    partialDateMode = false;
+    formData.update((current) => ({
+      ...current,
+      datePrecision: 'day',
+    }));
+  };
 
   function handleLookupApplied(tab: TimetableTab) {
     preferredMobileTab = tab;
     preferredMobileTabVersion += 1;
     showTimetable = true;
+    partialDateMode = false;
+    formData.update((current) => ({
+      ...current,
+      datePrecision: 'day',
+    }));
   }
 
   // Auto-open timetable when data is populated (e.g., from flight lookup)
@@ -108,7 +252,7 @@
         <FlightNumber {form} onLookupApplied={handleLookupApplied} />
         <AirportField field="from" {form} />
         <AirportField field="to" {form} />
-        {#if showTimetable}
+        {#if showTimetable && !partialDateMode}
           <FlightTimetable
             {form}
             {preferredMobileTab}
@@ -122,15 +266,32 @@
             Use simple departure/arrival inputs
           </button>
         {:else}
-          <DateTimeField field="departure" {form} />
-          <DateTimeField field="arrival" {form} />
-          <button
-            type="button"
-            class="text-xs text-muted-foreground transition hover:text-foreground text-left"
-            onclick={() => (showTimetable = true)}
-          >
-            Add detailed timetable (taxi, takeoff, landing times...)
-          </button>
+          <DateTimeField
+            field="departure"
+            {form}
+            {partialDateMode}
+            onEnablePartialDateMode={enablePartialDateMode}
+          />
+          {#if !partialDateMode}
+            <DateTimeField field="arrival" {form} {partialDateMode} />
+          {/if}
+          {#if partialDateMode}
+            <button
+              type="button"
+              class="text-xs text-muted-foreground transition hover:text-foreground text-left"
+              onclick={disablePartialDateMode}
+            >
+              Use full departure/arrival datetimes
+            </button>
+          {:else}
+            <button
+              type="button"
+              class="text-xs text-muted-foreground transition hover:text-foreground text-left"
+              onclick={() => (showTimetable = true)}
+            >
+              Add detailed timetable (taxi, takeoff, landing times...)
+            </button>
+          {/if}
         {/if}
         {#if durationWarning}
           <p class="text-yellow-500 text-sm font-medium">

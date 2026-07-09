@@ -3,21 +3,32 @@ import { sql } from 'kysely';
 import type { Lucia } from 'lucia';
 
 import { db } from '$lib/db';
-import type { User } from '$lib/db/types';
+import { publicUserFields, type User } from '$lib/db/types';
 import { hashSha256 } from '$lib/server/utils/hash';
 import { generateString } from '$lib/server/utils/random';
+import type { Preferences } from '$lib/zod/user';
+
+const usernameEquals = (username: string) =>
+  sql<boolean>`lower("username") = lower(${username})` as any;
 
 export const createUser = async (
   id: string,
   username: string,
   password: string,
   displayName: string,
-  unit: User['unit'],
   role: User['role'],
+  preferences?: Partial<Preferences>,
 ) => {
   const result = await db
     .insertInto('user')
-    .values({ id, username, password, displayName, unit, role })
+    .values({
+      id,
+      username,
+      password,
+      displayName,
+      role,
+      ...(preferences ?? {}),
+    })
     .executeTakeFirst();
   return result.numInsertedOrUpdatedRows && result.numInsertedOrUpdatedRows > 0;
 };
@@ -25,9 +36,34 @@ export const createUser = async (
 export const getUser = async (username: string) => {
   return db
     .selectFrom('user')
-    .where('username', '=', username)
+    .where(usernameEquals(username))
+    .select(publicUserFields)
+    .executeTakeFirst();
+};
+
+export const getUserWithPassword = async (username: string) => {
+  return db
+    .selectFrom('user')
+    .where(usernameEquals(username))
     .selectAll()
     .executeTakeFirst();
+};
+
+export const getUserWithOAuthId = async (username: string) => {
+  return db
+    .selectFrom('user')
+    .where(usernameEquals(username))
+    .select([...publicUserFields, 'oauthId'])
+    .executeTakeFirst();
+};
+
+export const getUserPasswordHash = async (userId: string) => {
+  const user = await db
+    .selectFrom('user')
+    .select('password')
+    .where('id', '=', userId)
+    .executeTakeFirst();
+  return user?.password ?? null;
 };
 
 export const createSessionCookie = async (lucia: Lucia, userId: string) => {
@@ -57,12 +93,20 @@ export const deleteSession = async (lucia: Lucia, cookies: Cookies) => {
   });
 };
 
-export const usernameExists = async (username: string) => {
-  const users = await db
+export const usernameExists = async (
+  username: string,
+  excludeUserId?: string,
+) => {
+  let query = db
     .selectFrom('user')
-    .where('username', '=', username)
     .select(sql`1`.as('exists'))
-    .execute();
+    .where(usernameEquals(username));
+
+  if (excludeUserId) {
+    query = query.where('id', '!=', excludeUserId);
+  }
+
+  const users = await query.execute();
   return users.length > 0;
 };
 

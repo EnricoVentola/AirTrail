@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { env } from '$env/dynamic/private';
 import { db } from '$lib/db';
+import { getDefaultAppMapStyleUrl } from '$lib/map/app-style';
 import { type DeepBoolean, deepSetAllValues } from '$lib/utils';
 import { deepMerge, removeUndefined, mapSetValues } from '$lib/utils/other';
 import { appConfigSchema, clientAppConfigSchema } from '$lib/zod/config';
@@ -81,7 +82,9 @@ export class AppConfig {
           issuerUrl: null,
           clientId: null,
           clientSecret: null,
-          scope: null,
+          tokenEndpointAuthMethod: 'client_secret_post',
+          scope: 'openid profile',
+          prompt: null,
           autoRegister: true,
           autoLogin: false,
           hidePasswordForm: false,
@@ -89,6 +92,11 @@ export class AppConfig {
         },
         integrations: {
           aeroDataBoxKey: null,
+          openAipKey: null,
+        },
+        map: {
+          lightStyleUrl: getDefaultAppMapStyleUrl('light'),
+          darkStyleUrl: getDefaultAppMapStyleUrl('dark'),
         },
         data: {
           lastSynced: null,

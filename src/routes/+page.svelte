@@ -1,22 +1,51 @@
 <script lang="ts">
-  import { isAfter, isBefore } from 'date-fns';
+  import { page } from '$app/state';
+  import { writable } from 'svelte/store';
   import { toast } from 'svelte-sonner';
 
   import {
-    defaultFilters,
-    defaultTempFilters,
+    createDefaultFilters,
+    matchesFlight,
+    matchesLocationFilters,
+    matchesNonLocationFilters,
+  } from '$lib/components/flight-filters/model';
+  import {
+    createDefaultTempFilters,
+    hasTempFilters as hasActiveTempFilters,
     type FlightFilters,
     type TempFilters,
-    type Route,
   } from '$lib/components/flight-filters/types';
   import FlightsOnboarding from '$lib/components/onboarding/FlightsOnboarding.svelte';
+  import { MapDetailsPane } from '$lib/components/map-details';
   import { Map } from '$lib/components/map';
   import { ListFlightsModal, StatisticsModal } from '$lib/components/modals';
-  import { openModalsState } from '$lib/state.svelte';
+  import {
+    flightScopeState,
+    focusFlightInList,
+    openModalsState,
+  } from '$lib/state.svelte';
   import { trpc } from '$lib/trpc';
-  import { prepareFlightData, type FlightData } from '$lib/utils';
+  import { prepareFlightData } from '$lib/utils';
 
-  const rawFlights = trpc.flight.list.query();
+  const user = $derived(page.data.user);
+
+  const flightListInput = writable<{
+    scope: 'mine' | 'user' | 'all';
+    userId?: string;
+  }>({
+    scope: 'mine',
+  });
+
+  $effect(() => {
+    flightListInput.set({
+      scope: flightScopeState.scope,
+      userId:
+        flightScopeState.scope === 'user' ? flightScopeState.userId : undefined,
+    });
+  });
+
+  const rawFlights = trpc.flight.list.query(flightListInput);
+  const rawFlightTracks = trpc.flightTrack.list.query(flightListInput);
   const rawVisitedCountries = trpc.visitedCountries.list.query();
 
   const flights = $derived.by(() => {
@@ -33,115 +62,53 @@
     return data;
   });
 
-  let filters: FlightFilters = $state(defaultFilters);
-  let tempFilters: TempFilters = $state(defaultTempFilters);
+  const flightTracks = $derived.by(() => {
+    const data = $rawFlightTracks.data;
+    if (!data || !data.length) return [];
+
+    return data;
+  });
+
+  let filters: FlightFilters = $state(createDefaultFilters());
+  let tempFilters: TempFilters = $state(createDefaultTempFilters());
+
+  const effectiveSeatUserId = $derived.by(() => {
+    if (flightScopeState.scope === 'all') return undefined;
+    if (flightScopeState.scope === 'user') return flightScopeState.userId;
+    return user?.id;
+  });
+
+  const showPassengerDetails = $derived(flightScopeState.scope !== 'mine');
+  const showCountryStats = $derived(flightScopeState.scope === 'mine');
+  let flightListOpenedFromStatistics = $state(false);
 
   $effect(() => {
     if (!openModalsState.listFlights) {
-      tempFilters = defaultTempFilters;
+      tempFilters = createDefaultTempFilters();
+      flightListOpenedFromStatistics = false;
     }
   });
 
-  const matchesRoute = (f: FlightData, r: Route): boolean => {
-    const fromId = f.from?.id.toString();
-    const toId = f.to?.id.toString();
-    return (fromId === r.a && toId === r.b) || (fromId === r.b && toId === r.a);
-  };
-
   const filteredFlights = $derived.by(() => {
-    return flights.filter((f) => {
-      const fromId = f.from?.id.toString();
-      const toId = f.to?.id.toString();
+    return flights.filter((flight) => matchesFlight(flight, filters));
+  });
 
-      if (tempFilters.routes.length || tempFilters.airportsEither.length) {
-        if (
-          tempFilters.routes.length &&
-          !tempFilters.routes.some((r) => matchesRoute(f, r))
-        ) {
-          return false;
-        }
-        if (
-          tempFilters.airportsEither.length &&
-          (!fromId ||
-            !toId ||
-            ![fromId, toId].some((id) =>
-              tempFilters.airportsEither.includes(id),
-            ))
-        ) {
-          return false;
-        }
-      } else {
-        if (
-          filters.departureAirports.length &&
-          (!fromId || !filters.departureAirports.includes(fromId))
-        ) {
-          return false;
-        }
-        if (
-          filters.arrivalAirports.length &&
-          (!toId || !filters.arrivalAirports.includes(toId))
-        ) {
-          return false;
-        }
-        if (
-          filters.airportsEither.length &&
-          (!fromId ||
-            !toId ||
-            ![fromId, toId].some((id) => filters.airportsEither.includes(id)))
-        ) {
-          return false;
-        }
-        if (
-          filters.routes.length &&
-          !filters.routes.some((r) => matchesRoute(f, r))
-        ) {
-          return false;
-        }
-      }
+  const drilldownFlights = $derived.by(() => {
+    const locationFilters = hasActiveTempFilters(tempFilters)
+      ? tempFilters
+      : filters;
 
-      if (
-        filters.fromDate &&
-        (!f.date ||
-          isBefore(f.date, filters.fromDate.toDate(f.date.timeZone ?? 'UTC')))
-      ) {
-        return false;
-      }
-      if (
-        filters.toDate &&
-        (!f.date ||
-          isAfter(f.date, filters.toDate.toDate(f.date.timeZone ?? 'UTC')))
-      ) {
-        return false;
-      }
-
-      if (
-        filters.airline.length &&
-        !filters.airline.includes(f.airline?.name || '')
-      ) {
-        return false;
-      }
-
-      if (
-        filters.aircraft.length &&
-        !filters.aircraft.includes(f.aircraft?.name || '')
-      ) {
-        return false;
-      }
-
-      if (
-        filters.aircraftRegs.length &&
-        !filters.aircraftRegs.includes(f.aircraftReg || '')
-      ) {
-        return false;
-      }
-
-      return true;
-    });
+    return flights.filter(
+      (flight) =>
+        matchesLocationFilters(flight, locationFilters) &&
+        matchesNonLocationFilters(flight, filters),
+    );
   });
 
   const invalidator = {
     onSuccess: () => {
       trpc.flight.list.utils.invalidate();
+      trpc.flightTrack.list.utils.invalidate();
     },
   };
   const deleteFlightMutation = trpc.flight.delete.mutation(invalidator);
@@ -156,6 +123,13 @@
       toast.error('Failed to delete flight', { id: toastId });
     }
   };
+
+  const openFlightInList = (flightId: number) => {
+    tempFilters = createDefaultTempFilters();
+    focusFlightInList(flightId);
+    flightListOpenedFromStatistics = true;
+    openModalsState.listFlights = true;
+  };
 </script>
 
 {#if !$rawFlights.isLoading}
@@ -166,13 +140,23 @@
   bind:filters
   bind:tempFilters
   {flights}
-  {filteredFlights}
+  filteredFlights={drilldownFlights}
   {deleteFlight}
+  seatUserId={effectiveSeatUserId}
+  {showPassengerDetails}
 />
 <StatisticsModal
   bind:open={openModalsState.statistics}
-  allFlights={filteredFlights}
-  visitedCountries={visitedCountriesData}
+  {flights}
+  {filteredFlights}
+  bind:filters
+  visitedCountries={showCountryStats ? visitedCountriesData : []}
+  seatUserId={effectiveSeatUserId}
+  {showCountryStats}
+  onOpenFlight={openFlightInList}
+  suppressEscapeNavigation={flightListOpenedFromStatistics &&
+    openModalsState.listFlights}
 />
 
-<Map bind:filters bind:tempFilters {flights} {filteredFlights} />
+<Map bind:filters bind:tempFilters {flights} {filteredFlights} {flightTracks} />
+<MapDetailsPane {flights} bind:filters bind:tempFilters />

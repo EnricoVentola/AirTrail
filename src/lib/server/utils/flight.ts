@@ -1,5 +1,5 @@
 import type { TZDate } from '@date-fns/tz';
-import { differenceInSeconds, format, isBefore, parseISO } from 'date-fns';
+import { differenceInSeconds, isBefore, parseISO } from 'date-fns';
 import { type Insertable, sql } from 'kysely';
 import { z } from 'zod';
 
@@ -9,10 +9,12 @@ import {
   createFlightPrimitiveWithConnection,
   createManyFlightsPrimitive,
   getFlightPrimitive,
+  listAllFlightsPrimitive,
   listFlightBaseQuery,
   listFlightPrimitive,
   updateFlightPrimitive,
   updateFlightPrimitiveWithConnection,
+  upsertFlightTrackPrimitiveWithConnection,
 } from '$lib/db/queries';
 import type { DB } from '$lib/db/schema';
 import type { CreateFlight, Flight, User } from '$lib/db/types';
@@ -81,6 +83,10 @@ export const listFlights = async (userId: string) => {
   return await listFlightPrimitive(db, userId);
 };
 
+export const listAllFlights = async () => {
+  return await listAllFlightsPrimitive(db);
+};
+
 export const getFlight = async (id: number) => {
   return await getFlightPrimitive(db, id);
 };
@@ -92,10 +98,15 @@ export const createFlight = async (data: CreateFlight) => {
 export const validateAndSaveFlight = async (
   user: User,
   data: z.infer<typeof flightSchema>,
+  options?: {
+    bypassSeatCheck?: boolean;
+  },
 ): Promise<ErrorActionResult & { id?: number }> => {
-  const pathError = (path: string, message: string) => {
-    return { success: false, type: 'path', path, message } as const;
+  const pathError = (path: string, message: string): ErrorActionResult => {
+    return { success: false, type: 'path', path, message };
   };
+
+  const toCanonicalDate = (iso: string) => iso.slice(0, 10);
 
   const parseDateTimeField = (
     date: string | null,
@@ -111,8 +122,157 @@ export const validateAndSaveFlight = async (
     }
   };
 
+  const saveFlightValues = async (
+    values: CreateFlight,
+    customFields: Record<string, unknown>,
+  ): Promise<ErrorActionResult & { id?: number }> => {
+    const updateId = data.id;
+    if (updateId) {
+      const flight = await getFlight(updateId);
+      if (
+        !flight ||
+        (!options?.bypassSeatCheck &&
+          !flight.seats.some((seat) => seat.userId === user.id))
+      ) {
+        return {
+          success: false,
+          type: 'httpError',
+          status: 404,
+          message: 'Flight not found or you do not have a seat on this flight',
+        };
+      }
+
+      try {
+        await db.transaction().execute(async (trx) => {
+          await updateFlightPrimitiveWithConnection(trx, updateId, values);
+          await persistEntityCustomFields(trx, {
+            entityType: 'flight',
+            entityId: String(updateId),
+            values: customFields,
+          });
+        });
+      } catch (e) {
+        if (e instanceof CustomFieldValidationError) {
+          return {
+            success: false,
+            type: 'error',
+            message: e.message,
+          };
+        }
+        return {
+          success: false,
+          type: 'error',
+          message: 'Failed to update flight',
+        };
+      }
+
+      return { success: true, message: 'Flight updated successfully' };
+    }
+
+    let flightId: number;
+    try {
+      flightId = await db.transaction().execute(async (trx) => {
+        const createdFlightId = await createFlightPrimitiveWithConnection(
+          trx,
+          values,
+        );
+        await persistEntityCustomFields(trx, {
+          entityType: 'flight',
+          entityId: String(createdFlightId),
+          values: customFields,
+        });
+        return createdFlightId;
+      });
+    } catch (e) {
+      if (e instanceof CustomFieldValidationError) {
+        return {
+          success: false,
+          type: 'error',
+          message: e.message,
+        };
+      }
+      return {
+        success: false,
+        type: 'error',
+        message: 'Failed to add flight',
+      };
+    }
+
+    return {
+      success: true,
+      message: 'Flight added',
+      id: flightId,
+    };
+  };
+
   const from = data.from;
   const to = data.to;
+
+  const {
+    datePrecision,
+    flightNumber,
+    aircraft,
+    aircraftReg,
+    airline,
+    flightReason,
+    note,
+    departureTerminal,
+    departureGate,
+    arrivalTerminal,
+    arrivalGate,
+    customFields = {},
+    track,
+  } = data;
+
+  if (data.datePrecision !== 'day') {
+    if (!data.departure) {
+      return pathError('departure', 'Enter a 4-digit departure year');
+    }
+
+    const departureDate = parseISO(data.departure);
+    if (isBeforeEpoch(departureDate)) {
+      return pathError('departure', 'Too far in the past');
+    }
+
+    let duration: number | null = null;
+    if (from.id !== to.id) {
+      const fromLonLat = { lon: from.lon, lat: from.lat };
+      const toLonLat = { lon: to.lon, lat: to.lat };
+      duration = estimateFlightDuration(
+        distanceBetween(fromLonLat, toLonLat) / 1000,
+      );
+    }
+
+    const values = {
+      from,
+      to,
+      duration,
+      departure: data.departure,
+      arrival: null,
+      departureScheduled: null,
+      arrivalScheduled: null,
+      takeoffScheduled: null,
+      takeoffActual: null,
+      landingScheduled: null,
+      landingActual: null,
+      departureTerminal: departureTerminal ?? null,
+      departureGate: departureGate ?? null,
+      arrivalTerminal: arrivalTerminal ?? null,
+      arrivalGate: arrivalGate ?? null,
+      date: toCanonicalDate(data.departure),
+      datePrecision,
+      flightNumber,
+      aircraft,
+      aircraftReg,
+      airline,
+      flightReason,
+      note,
+      seats: data.seats,
+      track,
+    };
+
+    return await saveFlightValues(values, customFields);
+  }
 
   // Either departure or departureScheduled must be set
   if (!data.departure && !data.departureScheduled) {
@@ -256,20 +416,6 @@ export const validateAndSaveFlight = async (
     );
   }
 
-  const {
-    flightNumber,
-    aircraft,
-    aircraftReg,
-    airline,
-    flightReason,
-    note,
-    departureTerminal,
-    departureGate,
-    arrivalTerminal,
-    arrivalGate,
-    customFields = {},
-  } = data;
-
   const values = {
     from,
     to,
@@ -294,7 +440,8 @@ export const validateAndSaveFlight = async (
     departureGate: departureGate ?? null,
     arrivalTerminal: arrivalTerminal ?? null,
     arrivalGate: arrivalGate ?? null,
-    date: format(departureDate, 'yyyy-MM-dd'),
+    date: toCanonicalDate(primaryDepartureDate!),
+    datePrecision,
     flightNumber,
     aircraft,
     aircraftReg,
@@ -302,81 +449,10 @@ export const validateAndSaveFlight = async (
     flightReason,
     note,
     seats: data.seats,
+    track,
   };
 
-  const updateId = data.id;
-  if (updateId) {
-    const flight = await getFlight(updateId);
-    if (!flight?.seats.some((seat) => seat.userId === user.id)) {
-      return {
-        success: false,
-        type: 'httpError',
-        status: 403,
-        message: 'Flight not found or you do not have a seat on this flight',
-      };
-    }
-
-    try {
-      await db.transaction().execute(async (trx) => {
-        await updateFlightPrimitiveWithConnection(trx, updateId, values);
-        await persistEntityCustomFields(trx, {
-          entityType: 'flight',
-          entityId: String(updateId),
-          values: customFields,
-        });
-      });
-    } catch (e) {
-      if (e instanceof CustomFieldValidationError) {
-        return {
-          success: false,
-          type: 'error',
-          message: e.message,
-        };
-      }
-      return {
-        success: false,
-        type: 'error',
-        message: 'Failed to update flight',
-      };
-    }
-
-    return { success: true, message: 'Flight updated successfully' };
-  }
-
-  let flightId: number;
-  try {
-    flightId = await db.transaction().execute(async (trx) => {
-      const createdFlightId = await createFlightPrimitiveWithConnection(
-        trx,
-        values,
-      );
-      await persistEntityCustomFields(trx, {
-        entityType: 'flight',
-        entityId: String(createdFlightId),
-        values: customFields,
-      });
-      return createdFlightId;
-    });
-  } catch (e) {
-    if (e instanceof CustomFieldValidationError) {
-      return {
-        success: false,
-        type: 'error',
-        message: e.message,
-      };
-    }
-    return {
-      success: false,
-      type: 'error',
-      message: 'Failed to add flight',
-    };
-  }
-
-  return {
-    success: true,
-    message: 'Flight added',
-    id: flightId,
-  };
+  return await saveFlightValues(values, customFields);
 };
 
 export const deleteFlight = async (id: number) => {
@@ -392,6 +468,7 @@ const signature = (f: CreateFlight) => {
   const to = f.to?.id ?? null;
   return [
     f.date ?? '',
+    f.datePrecision ?? 'day',
     from ?? '',
     to ?? '',
     f.flightNumber ?? '',
@@ -470,11 +547,19 @@ export const createManyFlights = async (
   const flightsToInsert: CreateFlight[] = [];
   type SeatInsert = Insertable<DB['seat']>;
   const seatsToAttach: SeatInsert[] = [];
+  const tracksToUpsert: Array<{
+    flightId: number;
+    track: NonNullable<CreateFlight['track']>;
+  }> = [];
 
   for (const f of uniqueFlights) {
     const key = signature(f);
     const existingId = existingBySig.get(key);
     if (existingId) {
+      if (f.track) {
+        tracksToUpsert.push({ flightId: existingId, track: f.track });
+      }
+
       // If user already has a seat on this flight, skip entirely
       if (userSeatByFlight.has(existingId)) {
         continue;
@@ -504,7 +589,7 @@ export const createManyFlights = async (
 
   // Attach seats to existing flights (dedup seats per user/flight)
   let attachedSeats = 0;
-  if (seatsToAttach.length) {
+  if (seatsToAttach.length || tracksToUpsert.length) {
     const seatKey = (s: { flightId: number; userId: string | null }) =>
       `${s.flightId}|${s.userId ?? ''}`;
     const uniqueSeatsMap = new Map<string, (typeof seatsToAttach)[number]>();
@@ -513,10 +598,17 @@ export const createManyFlights = async (
       if (!uniqueSeatsMap.has(k)) uniqueSeatsMap.set(k, s);
     }
     const uniqueSeats = Array.from(uniqueSeatsMap.values());
-    if (uniqueSeats.length) {
-      await db.insertInto('seat').values(uniqueSeats).execute();
-      attachedSeats = uniqueSeats.length;
-    }
+
+    await db.transaction().execute(async (trx) => {
+      for (const { flightId, track } of tracksToUpsert) {
+        await upsertFlightTrackPrimitiveWithConnection(trx, flightId, track);
+      }
+
+      if (uniqueSeats.length) {
+        await trx.insertInto('seat').values(uniqueSeats).execute();
+        attachedSeats = uniqueSeats.length;
+      }
+    });
   }
 
   return { insertedFlights, attachedSeats };

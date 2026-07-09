@@ -2,6 +2,7 @@ import { type Handle, type ServerInit } from '@sveltejs/kit';
 import { sequence } from '@sveltejs/kit/hooks';
 import type { Cookie } from 'lucia';
 
+import '$lib/zod/setup';
 import { lucia } from '$lib/server/auth';
 import { validateAirlineIcons } from '$lib/server/utils/airline';
 import { appConfig } from '$lib/server/utils/config';
@@ -60,4 +61,20 @@ const authHandle: Handle = async ({ event, resolve }) => {
   return resolve(event);
 };
 
-export const handle: Handle = sequence(authHandle);
+/*
+ * https://github.com/sveltejs/kit/issues/11084
+ * Fixed in sveltekit v3, by gating Link header generation behind config.kit.output.linkHeaderPreload
+ */
+const dropExcessiveLinkHeaderHandle: Handle = async ({ event, resolve }) => {
+  const response = await resolve(event);
+
+  if (Number(response.headers.get('Link')?.length) > 3700) {
+    response.headers.delete('Link');
+  }
+  return response;
+};
+
+export const handle: Handle = sequence(
+  authHandle,
+  dropExcessiveLinkHeaderHandle,
+);

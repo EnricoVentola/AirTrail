@@ -1,5 +1,10 @@
 import type { Airline, Airport } from '$lib/db/types';
 
+export type ImportFailure = {
+  index: number;
+  message: string;
+};
+
 export type PlatformOptions = {
   filterOwner: boolean;
   airlineFromFlightNumber: boolean;
@@ -66,6 +71,26 @@ export const platforms = [
     extensions: ['.csv'],
     options: {
       filterOwner: true,
+      airlineFromFlightNumber: true,
+    },
+  },
+  {
+    name: 'JetLovers',
+    value: 'jetlovers',
+    description: 'CSV export from JetLovers flight tracker.',
+    extensions: ['.csv'],
+    options: {
+      filterOwner: false,
+      airlineFromFlightNumber: true,
+    },
+  },
+  {
+    name: 'OpenFlights',
+    value: 'openflights',
+    description: 'CSV backup from OpenFlights.',
+    extensions: ['.csv'],
+    options: {
+      filterOwner: false,
       airlineFromFlightNumber: true,
     },
   },

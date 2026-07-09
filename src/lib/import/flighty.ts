@@ -148,12 +148,13 @@ export const processFlightyFile = async (
     throw new Error('User not found');
   }
 
-  const [data, error] = parseCsv(input, FlightyFlight);
-  if (data.length === 0 || error) {
+  const { rows: data, skipped } = parseCsv(input, FlightyFlight);
+  if (data.length === 0) {
     return {
       flights: [],
       unknownAirports: {},
       unknownAirlines: {},
+      skippedRows: skipped.length,
     };
   }
 
@@ -271,6 +272,7 @@ export const processFlightyFile = async (
         ? landingScheduled.toISOString()
         : null,
       landingActual: landingActual ? landingActual.toISOString() : null,
+      datePrecision: 'day',
       departureTerminal: row.dep_terminal,
       departureGate: row.dep_gate,
       arrivalTerminal: row.arr_terminal,
@@ -298,5 +300,6 @@ export const processFlightyFile = async (
     flights,
     unknownAirports,
     unknownAirlines,
+    skippedRows: skipped.length,
   };
 };
